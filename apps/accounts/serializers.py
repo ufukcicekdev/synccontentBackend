@@ -1,148 +1,76 @@
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.contrib.auth.password_validation import validate_password
-from django.core.exceptions import ValidationError
-from .models import User, UserProfile
+from .models import User, UserProfile, SystemLog
 
 
-class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
-    """Custom token serializer that accepts email instead of username"""
-    
-    username_field = 'email'
-    
-    def validate(self, attrs):
-        # Replace email with username for the parent validation
-        email = attrs.get('email')
-        if email:
-            try:
-                user = User.objects.get(email=email)
-                attrs['username'] = user.username
-            except User.DoesNotExist:
-                pass
-        
-        data = super().validate(attrs)
-        
-        # Add user data to response
-        user_serializer = UserSerializer(self.user)
-        data['user'] = user_serializer.data
-        
-        return data
+class UserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ['id', 'email', 'username', 'full_name', 'subscription_tier', 'is_verified', 'created_at']
+        read_only_fields = ['id', 'created_at']
 
 
 class UserProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserProfile
-        fields = [
-            'company_name', 'website_url', 'bio', 'timezone', 
-            'language', 'marketing_emails'
-        ]
+        fields = ['company_name', 'website_url', 'bio', 'timezone', 'language', 'marketing_emails']
 
 
-class UserSerializer(serializers.ModelSerializer):
-    profile = UserProfileSerializer(read_only=True)
+class SystemLogSerializer(serializers.ModelSerializer):
+    user_email = serializers.CharField(source='user.email', read_only=True)
     
     class Meta:
-        model = User
+        model = SystemLog
         fields = [
-            'id', 'email', 'username', 'full_name', 'profile_picture',
-            'subscription_tier', 'is_verified', 'created_at', 'updated_at',
-            'profile'
+            'id', 'level', 'logger_name', 'message', 'pathname', 'funcName', 
+            'lineno', 'created', 'user', 'user_email', 'request_path', 
+            'request_method', 'ip_address', 'user_agent', 'extra_data'
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'is_verified']
+        read_only_fields = ['id', 'created']
 
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, min_length=8)
-    password_confirm = serializers.CharField(write_only=True)
-    full_name = serializers.CharField(required=True)
-    subscription_tier = serializers.ChoiceField(
-        choices=['starter', 'professional', 'agency'],
-        default='starter'
-    )
+    password = serializers.CharField(write_only=True)
     
     class Meta:
         model = User
-        fields = [
-            'email', 'username', 'password', 'password_confirm', 
-            'full_name', 'subscription_tier'
-        ]
-        extra_kwargs = {
-            'username': {'required': False}
-        }
-    
-    def validate(self, attrs):
-        # Check if passwords match
-        if attrs['password'] != attrs['password_confirm']:
-            raise serializers.ValidationError({
-                'password_confirm': 'Passwords do not match.'
-            })
+        fields = ['email', 'username', 'full_name', 'password']
         
-        # Validate password strength
-        try:
-            validate_password(attrs['password'])
-        except ValidationError as e:
-            raise serializers.ValidationError({
-                'password': list(e.messages)
-            })
-        
-        return attrs
-    
-    def validate_email(self, value):
-        if User.objects.filter(email=value).exists():
-            raise serializers.ValidationError('A user with this email already exists.')
-        return value
-    
     def create(self, validated_data):
-        # Remove password_confirm from validated_data
-        validated_data.pop('password_confirm')
-        
-        # Generate username from email if not provided
-        if not validated_data.get('username'):
-            email = validated_data['email']
-            base_username = email.split('@')[0]
-            username = base_username
-            counter = 1
-            
-            while User.objects.filter(username=username).exists():
-                username = f"{base_username}{counter}"
-                counter += 1
-            
-            validated_data['username'] = username
-        
-        # Create user
         user = User.objects.create_user(
             email=validated_data['email'],
             username=validated_data['username'],
             password=validated_data['password'],
-            full_name=validated_data['full_name'],
-            subscription_tier=validated_data.get('subscription_tier', 'starter')
+            full_name=validated_data.get('full_name', '')
         )
-        
         return user
 
 
-class UserUpdateSerializer(serializers.ModelSerializer):
-    profile = UserProfileSerializer(required=False)
+class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+    username_field = 'email'
     
-    class Meta:
-        model = User
-        fields = [
-            'full_name', 'profile_picture', 'subscription_tier', 'profile'
-        ]
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['email'] = serializers.EmailField()
+        del self.fields['username']
     
-    def update(self, instance, validated_data):
-        profile_data = validated_data.pop('profile', None)
+    def validate(self, attrs):
+        email = attrs.get('email')
+        password = attrs.get('password')
         
-        # Update user fields
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
-        instance.save()
+        if email and password:
+            try:
+                user = User.objects.get(email=email)
+                attrs['username'] = user.username
+            except User.DoesNotExist:
+                raise serializers.ValidationError('Invalid email or password')
         
-        # Update profile if provided
-        if profile_data:
-            profile, created = UserProfile.objects.get_or_create(user=instance)
-            for attr, value in profile_data.items():
-                setattr(profile, attr, value)
-            profile.save()
-        
-        return instance
+        return super().validate(attrs)
+    
+    @classmethod
+    def get_token(cls, user):
+        token = super().get_token(user)
+        token['email'] = user.email
+        token['full_name'] = user.full_name
+        return token

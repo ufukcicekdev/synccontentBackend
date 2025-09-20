@@ -18,4 +18,7 @@ urlpatterns = [
     path('user/', views.profile, name='user_profile'),
     path('change-password/', views.change_password, name='change_password'),
     path('delete-account/', views.delete_account, name='delete_account'),
+    
+    # System logs endpoint
+    path('logs/', views.SystemLogListView.as_view(), name='system_logs'),
 ]

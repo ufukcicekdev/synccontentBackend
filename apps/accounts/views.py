@@ -2,14 +2,15 @@ from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.generics import ListAPIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from django.contrib.auth import authenticate
 from django.core.exceptions import ValidationError
 from django.contrib.auth.password_validation import validate_password
 
-from .models import User, UserProfile
-from .serializers import UserSerializer, UserRegistrationSerializer, CustomTokenObtainPairSerializer
+from .models import User, UserProfile, SystemLog
+from .serializers import UserSerializer, UserRegistrationSerializer, CustomTokenObtainPairSerializer, SystemLogSerializer
 
 
 class CustomTokenObtainPairView(TokenObtainPairView):
@@ -137,3 +138,33 @@ def delete_account(request):
     return Response({
         'message': 'Account deleted successfully'
     }, status=status.HTTP_200_OK)
+
+
+class SystemLogListView(ListAPIView):
+    """List system logs with filtering and pagination"""
+    serializer_class = SystemLogSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        queryset = SystemLog.objects.all().order_by('-created')
+        
+        # Filter by level
+        level = self.request.query_params.get('level', None)
+        if level:
+            queryset = queryset.filter(level=level)
+        
+        # Filter by logger name
+        logger_name = self.request.query_params.get('logger', None)
+        if logger_name:
+            queryset = queryset.filter(logger_name__icontains=logger_name)
+        
+        # Filter by user (staff only)
+        if self.request.user.is_staff:
+            user_id = self.request.query_params.get('user', None)
+            if user_id:
+                queryset = queryset.filter(user_id=user_id)
+        else:
+            # Non-staff users can only see their own logs
+            queryset = queryset.filter(user=self.request.user)
+        
+        return queryset
