@@ -48,23 +48,37 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
-    username_field = 'email'
+    """Custom token serializer that uses email instead of username"""
+    
+    email = serializers.EmailField()
+    password = serializers.CharField()
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.fields['email'] = serializers.EmailField()
-        del self.fields['username']
+        # Remove the username field and use email instead
+        if 'username' in self.fields:
+            del self.fields['username']
     
     def validate(self, attrs):
         email = attrs.get('email')
         password = attrs.get('password')
         
-        if email and password:
-            try:
-                user = User.objects.get(email=email)
-                attrs['username'] = user.username
-            except User.DoesNotExist:
-                raise serializers.ValidationError('Invalid email or password')
+        if not email or not password:
+            raise serializers.ValidationError('Email and password are required')
+        
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            raise serializers.ValidationError('Invalid email or password')
+        
+        if not user.check_password(password):
+            raise serializers.ValidationError('Invalid email or password')
+        
+        if not user.is_active:
+            raise serializers.ValidationError('User account is disabled')
+        
+        # Set the username for the parent class
+        attrs['username'] = user.username
         
         return super().validate(attrs)
     
@@ -73,4 +87,5 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         token = super().get_token(user)
         token['email'] = user.email
         token['full_name'] = user.full_name
+        token['user_id'] = user.id
         return token
