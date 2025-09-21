@@ -608,12 +608,139 @@ class InstagramAnalyticsService:
             return None
 
 
+class LinkedInAnalyticsService:
+    """Service to fetch LinkedIn account analytics"""
+    
+    @classmethod
+    def fetch_account_analytics(cls, account: UserSocialAccount):
+        """Fetch LinkedIn account analytics"""
+        if account.platform.name != 'linkedin':
+            return None
+        
+        try:
+            access_token = account.decrypt_token(account.access_token)
+            if not access_token:
+                return None
+            
+            headers = {
+                'Authorization': f'Bearer {access_token}',
+                'Accept': 'application/json'
+            }
+            
+            # Fetch basic profile information using the new scopes
+            profile_response = requests.get(
+                'https://api.linkedin.com/v2/userinfo',
+                headers=headers
+            )
+            
+            if profile_response.status_code != 200:
+                logger.error(f"Failed to fetch LinkedIn profile for account {account.id}: {profile_response.status_code}")
+                return None
+            
+            profile_data = profile_response.json()
+            logger.info(f"LinkedIn profile data for account {account.id}: {profile_data}")
+            
+            # Initialize analytics data
+            analytics_data = {
+                'last_updated': timezone.now()
+            }
+            
+            # Get connection count - try different approaches based on available scopes
+            connection_count = 0
+            
+            # First, try to get from profile data if available
+            if 'connections' in profile_data:
+                connection_count = profile_data.get('connections', 0)
+                logger.info(f"Got connection count from profile data: {connection_count}")
+            else:
+                # Try alternative endpoints for connection data
+                # Note: LinkedIn's connection API has strict access requirements
+                # For most users, connection count is not directly accessible via API
+                # We'll set it to a placeholder value to indicate we tried to fetch it
+                connection_count = 0  # Placeholder - LinkedIn API restrictions prevent fetching this for most users
+            
+            analytics_data['connection_count'] = connection_count
+            
+            # Try to get organization information if available
+            try:
+                # Check if the user has organization access using r_organization_admin scope
+                org_response = requests.get(
+                    'https://api.linkedin.com/v2/organizationAcls',
+                    headers=headers,
+                    params={
+                        'q': 'roleAssignee',
+                        'projection': '(elements*(organization~(localizedName,id)))'
+                    }
+                )
+                
+                if org_response.status_code == 200:
+                    org_data = org_response.json()
+                    if org_data.get('elements'):
+                        # User has organization access, get organization analytics
+                        org_id = org_data['elements'][0]['organization~']['id']
+                        org_analytics = cls._fetch_organization_analytics(access_token, org_id)
+                        if org_analytics:
+                            analytics_data.update(org_analytics)
+            except Exception as e:
+                logger.warning(f"Could not fetch organization data for LinkedIn account {account.id}: {e}")
+            
+            # Update or create analytics record
+            analytics, created = SocialAccountAnalytics.objects.get_or_create(
+                account=account,
+                defaults=analytics_data
+            )
+            
+            if not created:
+                for key, value in analytics_data.items():
+                    setattr(analytics, key, value)
+                analytics.save()
+            
+            logger.info(f"Updated LinkedIn analytics for account {account.id}: {analytics_data}")
+            return analytics_data
+            
+        except Exception as e:
+            logger.error(f"Error fetching LinkedIn analytics for account {account.id}: {e}")
+            return None
+    
+    @classmethod
+    def _fetch_organization_analytics(cls, access_token: str, org_id: str):
+        """Fetch organization-level analytics (requires Marketing Developer Platform)"""
+        try:
+            headers = {
+                'Authorization': f'Bearer {access_token}',
+                'Accept': 'application/json'
+            }
+            
+            # Fetch organization basic information using r_organization_admin scope
+            org_info_response = requests.get(
+                f'https://api.linkedin.com/v2/organizations/{org_id}',
+                headers=headers
+            )
+            
+            org_name = "Unknown Organization"
+            if org_info_response.status_code == 200:
+                org_info = org_info_response.json()
+                org_name = org_info.get('localizedName', org_name)
+            
+            # For detailed analytics, we would need to use the LinkedIn Marketing API
+            # This requires special access and is beyond the scope of basic integration
+            # For now, we'll return basic organization info
+            return {
+                'connection_count': 0,  # Placeholder - would need Marketing API for real data
+            }
+            
+        except Exception as e:
+            logger.error(f"Error fetching organization analytics: {e}")
+            return None
+
+
 class SocialAnalyticsService:
     """Main service to coordinate analytics fetching for all platforms"""
     
     PLATFORM_SERVICES = {
         'youtube': YouTubeAnalyticsService,
         'instagram': InstagramAnalyticsService,
+        'linkedin': LinkedInAnalyticsService,  # Add LinkedIn service
     }
     
     @classmethod

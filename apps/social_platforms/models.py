@@ -57,7 +57,7 @@ class UserSocialAccount(models.Model):
     platform_user_id = models.CharField(max_length=255, help_text='User ID on the social platform')
     platform_username = models.CharField(max_length=255, blank=True)
     platform_display_name = models.CharField(max_length=255, blank=True)
-    profile_picture_url = models.URLField(blank=True)
+    profile_picture_url = models.URLField(max_length=500, blank=True)
     
     # Encrypted tokens for security
     access_token = models.TextField(help_text='Encrypted access token')

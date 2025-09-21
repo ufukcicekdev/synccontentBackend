@@ -69,24 +69,35 @@ def initiate_oauth(request, platform_name):
     request.session[f'oauth_state_{platform_name}'] = state
     
     # Build OAuth authorization URL
-    oauth_params = {
-        'client_id': platform.oauth_client_id,
-        'redirect_uri': f"{settings.FRONTEND_URL}/auth/callback/{platform_name}",
-        'scope': platform.oauth_scope,
-        'state': state,
-        'response_type': 'code',
-    }
-    
-    # Platform-specific parameters
-    if platform_name == 'instagram':
-        oauth_params['response_type'] = 'code'
-    elif platform_name == 'youtube':
-        oauth_params['access_type'] = 'offline'
-        oauth_params['prompt'] = 'consent'
-    elif platform_name == 'linkedin':
-        oauth_params['response_type'] = 'code'
-    
-    authorization_url = f"{platform.oauth_authorization_url}?{urlencode(oauth_params)}"
+    if platform_name == 'linkedin':
+        # Special handling for LinkedIn to ensure correct parameter order matching LinkedIn's documentation
+        authorization_url = (
+            f"{platform.oauth_authorization_url}?"
+            f"response_type=code&"
+            f"client_id={platform.oauth_client_id}&"
+            f"redirect_uri={settings.FRONTEND_URL}/auth/callback/{platform_name}&"
+            f"state={state}&"
+            f"scope={platform.oauth_scope}"
+        )
+    else:
+        oauth_params = {
+            'client_id': platform.oauth_client_id,
+            'redirect_uri': f"{settings.FRONTEND_URL}/auth/callback/{platform_name}",
+            'scope': platform.oauth_scope,
+            'state': state,
+            'response_type': 'code',
+        }
+        
+        # Platform-specific parameters
+        if platform_name == 'instagram':
+            oauth_params['response_type'] = 'code'
+        elif platform_name == 'youtube':
+            oauth_params['access_type'] = 'offline'
+            oauth_params['prompt'] = 'consent'
+        elif platform_name == 'linkedin':
+            oauth_params['response_type'] = 'code'
+        
+        authorization_url = f"{platform.oauth_authorization_url}?{urlencode(oauth_params)}"
     
     return Response({
         'authorization_url': authorization_url,
@@ -127,13 +138,23 @@ def handle_oauth_callback(request, platform_name):
         }, status=status.HTTP_404_NOT_FOUND)
     
     # Exchange code for access token
-    token_data = {
-        'client_id': platform.oauth_client_id,
-        'client_secret': platform.oauth_client_secret,
-        'code': code,
-        'grant_type': 'authorization_code',
-        'redirect_uri': f"{settings.FRONTEND_URL}/auth/callback/{platform_name}",
-    }
+    if platform_name == 'linkedin':
+        # Special handling for LinkedIn token exchange
+        token_data = {
+            'grant_type': 'authorization_code',
+            'code': code,
+            'redirect_uri': f"{settings.FRONTEND_URL}/auth/callback/{platform_name}",
+            'client_id': platform.oauth_client_id,
+            'client_secret': platform.oauth_client_secret,
+        }
+    else:
+        token_data = {
+            'client_id': platform.oauth_client_id,
+            'client_secret': platform.oauth_client_secret,
+            'code': code,
+            'grant_type': 'authorization_code',
+            'redirect_uri': f"{settings.FRONTEND_URL}/auth/callback/{platform_name}",
+        }
     
     try:
         token_response = requests.post(platform.oauth_token_url, data=token_data)
@@ -231,7 +252,9 @@ def get_platform_user_info(platform_name, access_token):
         elif platform_name == 'youtube':
             response = requests.get('https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true', headers=headers)
         elif platform_name == 'linkedin':
-            response = requests.get('https://api.linkedin.com/v2/people/~?projection=(id,firstName,lastName,profilePicture(displayImage~:playableStreams))', headers=headers)
+            # Updated LinkedIn API endpoint with proper fields
+            # Using the newer userinfo endpoint that supports OpenID Connect with the openid scope
+            response = requests.get('https://api.linkedin.com/v2/userinfo', headers=headers)
         elif platform_name == 'twitter':
             response = requests.get('https://api.twitter.com/2/users/me', headers=headers)
         else:
@@ -260,6 +283,31 @@ def get_platform_user_info(platform_name, access_token):
                     'profile_picture': snippet.get('thumbnails', {}).get('default', {}).get('url', ''),
                     'permissions': {}
                 }
+        elif platform_name == 'linkedin':
+            # Parse LinkedIn user data using the new userinfo endpoint
+            # This endpoint is compatible with OpenID Connect and the openid scope
+            first_name = data.get('given_name', '')
+            last_name = data.get('family_name', '')
+            display_name = f"{first_name} {last_name}".strip()
+            
+            # Get profile picture if available
+            profile_picture = data.get('picture', '')
+            
+            return {
+                'id': data.get('sub'),  # Using the subject identifier from OpenID Connect
+                'username': display_name,
+                'display_name': display_name,
+                'profile_picture': profile_picture,
+                'permissions': {}
+            }
+        elif platform_name == 'twitter':
+            return {
+                'id': data.get('data', {}).get('id'),
+                'username': data.get('data', {}).get('username'),
+                'display_name': data.get('data', {}).get('name'),
+                'profile_picture': '',
+                'permissions': {}
+            }
         # Add other platforms as needed
         
         return None
