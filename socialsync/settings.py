@@ -241,6 +241,10 @@ SOCIAL_MEDIA_CREDENTIALS = {
         'CLIENT_ID': config('TWITTER_CLIENT_ID', default=''),
         'CLIENT_SECRET': config('TWITTER_CLIENT_SECRET', default=''),
     },
+    'GOOGLE_AUTH': {
+        'CLIENT_ID': config('GOOGLE_AUTH_CLIENT_ID', default=''),
+        'CLIENT_SECRET': config('GOOGLE_AUTH_CLIENT_SECRET', default=''),
+    },
 }
 
 # AI Services

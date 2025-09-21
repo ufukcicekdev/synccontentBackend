@@ -12,6 +12,10 @@ urlpatterns = [
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('token/verify/', TokenVerifyView.as_view(), name='token_verify'),
     
+    # Google authentication
+    path('google/login/', views.google_login, name='google_login'),
+    path('google/register/', views.google_register, name='google_register'),
+    
     # Profile endpoints
     path('profile/', views.profile, name='profile'),
     path('profile/update/', views.update_profile, name='update_profile'),
