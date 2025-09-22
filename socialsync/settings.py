@@ -207,10 +207,10 @@ SIMPLE_JWT = {
 }
 
 # CORS settings
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_ALL_ORIGINS = config('CORS_ALLOW_ALL_ORIGINS', default=True, cast=bool)
 CORS_ALLOW_CREDENTIALS = True
 
-CORS_ALLOWED_ORIGINS = [
+CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', default='', cast=lambda v: [s.strip() for s in v.split(',')]) if config('CORS_ALLOWED_ORIGINS', default='') else [
     "http://localhost:3001",
     "http://127.0.0.1:3000",
     "https://synccontents.com",
@@ -242,16 +242,16 @@ CORS_ALLOW_HEADERS = [
 
 CSRF_COOKIE_SECURE = True  # HTTPS üzerinden
 SESSION_COOKIE_SECURE = True  # HTTPS üzerinden
-CSRF_COOKIE_SAMESITE = 'Lax'  # veya 'None' (HTTPS gerektirir)
-SESSION_COOKIE_SAMESITE = 'Lax'  # veya 'None' (HTTPS gerektirir)
+CSRF_COOKIE_SAMESITE = 'None'  # Changed from 'Lax' to 'None' for cross-origin requests
+SESSION_COOKIE_SAMESITE = 'None'  # Changed from 'Lax' to 'None' for cross-origin requests
 
-CSRF_TRUSTED_ORIGINS = [
+CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', default='', cast=lambda v: [s.strip() for s in v.split(',')]) if config('CSRF_TRUSTED_ORIGINS', default='') else [
     "http://localhost:3001",
     "http://127.0.0.1:3000",
      "https://synccontents.com",
     "https://www.synccontents.dev",
+    "https://web-production-3a29.up.railway.app",
 ]
-
 
 if not DEBUG:
     SECURE_SSL_REDIRECT = True
