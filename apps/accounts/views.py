@@ -10,13 +10,12 @@ from django.core.exceptions import ValidationError
 from django.contrib.auth.password_validation import validate_password
 from django.conf import settings
 
-# Google authentication imports
-try:
-    from google.oauth2 import id_token
-    from google.auth.transport import requests as google_requests
-    GOOGLE_AUTH_AVAILABLE = True
-except ImportError:
-    GOOGLE_AUTH_AVAILABLE = False
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
+GOOGLE_AUTH_AVAILABLE = True
+
+    
+
 
 from .models import User, UserProfile, SystemLog
 from .serializers import UserSerializer, UserRegistrationSerializer, CustomTokenObtainPairSerializer, SystemLogSerializer
@@ -209,7 +208,8 @@ def google_login(request):
         return Response({
             'error': 'Google authentication libraries are not installed'
         }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-    
+    print("request.data.get('token')",request.data.get('token'))
+
     token = request.data.get('token')
     
     if not token:
@@ -220,6 +220,7 @@ def google_login(request):
     try:
         # Verify the Google ID token
         google_client_id = settings.SOCIAL_MEDIA_CREDENTIALS.get('GOOGLE_AUTH', {}).get('CLIENT_ID')
+        print("google_client_id",google_client_id)
         if not google_client_id:
             return Response({
                 'error': 'Google authentication is not configured'
