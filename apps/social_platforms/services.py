@@ -597,7 +597,9 @@ class InstagramAnalyticsService:
             if account_info:
                 analytics_data.update({
                     'media_count': account_info.get('media_count', 0),
-                    'account_type': account_info.get('account_type', 'PERSONAL')
+                    'follower_count': account_info.get('followers_count', 0),
+                    'following_count': account_info.get('follows_count', 0),
+                    'account_type': 'BUSINESS'  # Instagram Graph API is for business accounts
                 })
                 logger.info(f"Updated basic info for Instagram account {account.id}")
             
@@ -646,21 +648,41 @@ class InstagramAnalyticsService:
     
     @classmethod
     def _fetch_account_info(cls, access_token):
-        """Fetch basic account information"""
+        """Fetch basic account information using Instagram Graph API"""
         try:
+            # First get Facebook pages
             response = requests.get(
-                'https://graph.instagram.com/me',
+                'https://graph.facebook.com/v18.0/me/accounts',
                 params={
-                    'fields': 'id,username,account_type,media_count',
-                    'access_token': access_token
+                    'access_token': access_token,
+                    'fields': 'instagram_business_account,name'
                 }
             )
             
-            if response.status_code == 200:
-                return response.json()
-            else:
-                logger.error(f"Failed to fetch Instagram account info: {response.status_code} - {response.text}")
+            if response.status_code != 200:
+                logger.error(f"Failed to fetch Facebook pages: {response.status_code} - {response.text}")
                 return None
+            
+            pages_data = response.json()
+            
+            # Find Instagram business account
+            for page in pages_data.get('data', []):
+                if 'instagram_business_account' in page:
+                    ig_account_id = page['instagram_business_account']['id']
+                    
+                    # Get Instagram account details
+                    ig_response = requests.get(
+                        f'https://graph.facebook.com/v18.0/{ig_account_id}',
+                        params={
+                            'access_token': access_token,
+                            'fields': 'id,username,name,profile_picture_url,media_count,followers_count,follows_count'
+                        }
+                    )
+                    
+                    if ig_response.status_code == 200:
+                        return ig_response.json()
+            
+            return None
                 
         except Exception as e:
             logger.error(f"Error fetching Instagram account info: {e}")
@@ -668,15 +690,40 @@ class InstagramAnalyticsService:
     
     @classmethod
     def _fetch_user_media(cls, access_token, account):
-        """Fetch user's Instagram media posts"""
+        """Fetch user's Instagram media posts using Instagram Graph API"""
         try:
-            # First get the list of media IDs
-            response = requests.get(
-                'https://graph.instagram.com/me/media',
+            # First get Instagram business account ID
+            pages_response = requests.get(
+                'https://graph.facebook.com/v18.0/me/accounts',
                 params={
-                    'fields': 'id,media_type,media_url,permalink,caption,timestamp',
-                    'limit': 25,  # Instagram Basic Display API limit
-                    'access_token': access_token
+                    'access_token': access_token,
+                    'fields': 'instagram_business_account'
+                }
+            )
+            
+            if pages_response.status_code != 200:
+                logger.error(f"Failed to fetch pages: {pages_response.status_code}")
+                return None
+            
+            pages_data = pages_response.json()
+            ig_account_id = None
+            
+            for page in pages_data.get('data', []):
+                if 'instagram_business_account' in page:
+                    ig_account_id = page['instagram_business_account']['id']
+                    break
+            
+            if not ig_account_id:
+                logger.error("No Instagram business account found")
+                return None
+            
+            # Get media from Instagram account
+            response = requests.get(
+                f'https://graph.facebook.com/v18.0/{ig_account_id}/media',
+                params={
+                    'access_token': access_token,
+                    'fields': 'id,media_type,media_url,permalink,caption,timestamp,like_count,comments_count',
+                    'limit': 25
                 }
             )
             
@@ -690,7 +737,6 @@ class InstagramAnalyticsService:
             # Process each media item
             for media_item in data.get('data', []):
                 try:
-                    # Get detailed media info (Instagram Basic Display doesn't provide likes/comments directly)
                     media_data = {
                         'media_id': media_item.get('id'),
                         'media_type': media_item.get('media_type', 'IMAGE'),
@@ -698,8 +744,8 @@ class InstagramAnalyticsService:
                         'permalink': media_item.get('permalink', ''),
                         'caption': media_item.get('caption', ''),
                         'timestamp': media_item.get('timestamp'),
-                        'like_count': 0,  # Not available in Basic Display API
-                        'comments_count': 0,  # Not available in Basic Display API
+                        'like_count': media_item.get('like_count', 0),
+                        'comments_count': media_item.get('comments_count', 0),
                     }
                     
                     # Create or update media record in database
