@@ -563,72 +563,53 @@ class YouTubeAnalyticsService:
             return None
 
 
-class InstagramAnalyticsService:
-    """Enhanced service to fetch Instagram analytics and media"""
+class InstagramBusinessAnalyticsService:
+    """Enhanced service for Instagram Business API with full management capabilities"""
     
     @classmethod
     def fetch_account_analytics(cls, account: UserSocialAccount):
-        """Fetch comprehensive Instagram account analytics and media"""
+        """Fetch comprehensive Instagram Business account analytics using Instagram Business API"""
         if account.platform.name != 'instagram':
             return None
         
         try:
             access_token = account.decrypt_token(account.access_token)
             if not access_token:
-                logger.error(f"No access token available for Instagram account {account.id}")
+                logger.error(f"No access token available for Instagram Business account {account.id}")
                 return None
             
-            # Initialize analytics data with defaults
+            # Get Instagram Business Account ID and basic info
+            instagram_account_id, basic_info = cls._get_instagram_business_account_id(access_token)
+            if not instagram_account_id:
+                logger.error(f"No Instagram Business Account found for user account {account.id}")
+                return None
+            
+            # Initialize with Business API data
             analytics_data = {
                 'last_updated': timezone.now(),
-                'follower_count': 0,
-                'following_count': 0,
-                'media_count': 0,
-                'account_type': '',
+                'follower_count': basic_info.get('followers_count', 0) if basic_info else 0,
+                'following_count': basic_info.get('follows_count', 0) if basic_info else 0,
+                'media_count': basic_info.get('media_count', 0) if basic_info else 0,
+                'account_type': 'BUSINESS',
+                'is_business_account': True,
+                'website': basic_info.get('website', '') if basic_info else '',
+                'biography': basic_info.get('biography', '') if basic_info else '',
                 'total_likes': 0,
                 'total_comments': 0,
-                'average_likes_per_post': 0,
-                'average_comments_per_post': 0,
+                'total_reach': 0,
+                'total_impressions': 0,
                 'engagement_rate': 0
             }
             
-            # Fetch basic account info
-            account_info = cls._fetch_account_info(access_token)
-            if account_info:
-                analytics_data.update({
-                    'media_count': account_info.get('media_count', 0),
-                    'follower_count': account_info.get('followers_count', 0),
-                    'following_count': account_info.get('follows_count', 0),
-                    'account_type': 'BUSINESS'  # Instagram Graph API is for business accounts
-                })
-                logger.info(f"Updated basic info for Instagram account {account.id}")
-            
-            # Fetch user media and calculate engagement metrics
+            # Fetch Instagram Insights (Business API exclusive feature)
             try:
-                media_data = cls._fetch_user_media(access_token, account)
-                if media_data:
-                    media_list = media_data.get('media', [])
-                    if media_list:
-                        total_likes = sum(media.get('like_count', 0) for media in media_list)
-                        total_comments = sum(media.get('comments_count', 0) for media in media_list)
-                        
-                        analytics_data.update({
-                            'total_likes': total_likes,
-                            'total_comments': total_comments,
-                            'average_likes_per_post': total_likes / len(media_list) if media_list else 0,
-                            'average_comments_per_post': total_comments / len(media_list) if media_list else 0,
-                        })
-                        
-                        # Calculate engagement rate (basic calculation)
-                        total_engagement = total_likes + total_comments
-                        if analytics_data['follower_count'] > 0:
-                            analytics_data['engagement_rate'] = (total_engagement / (analytics_data['follower_count'] * len(media_list))) * 100
-                        
-                        logger.info(f"Calculated engagement metrics for {len(media_list)} media posts")
+                insights_data = cls._fetch_account_insights(access_token, instagram_account_id)
+                if insights_data:
+                    analytics_data.update(insights_data)
             except Exception as e:
-                logger.warning(f"Could not fetch media for Instagram account {account.id}: {e}")
+                logger.warning(f"Could not fetch insights: {e}")
             
-            # Update or create analytics record
+            # Update analytics record
             analytics, created = InstagramAnalytics.objects.get_or_create(
                 account=account,
                 defaults=analytics_data
@@ -639,12 +620,93 @@ class InstagramAnalyticsService:
                     setattr(analytics, key, value)
                 analytics.save()
             
-            logger.info(f"Successfully updated Instagram analytics for account {account.id}")
             return analytics_data
             
         except Exception as e:
-            logger.error(f"Error fetching Instagram analytics for account {account.id}: {e}")
+            logger.error(f"Error fetching Instagram Business analytics: {e}")
             return None
+    
+    @classmethod
+    def _get_instagram_business_account_id(cls, access_token):
+        """Get Instagram Business Account ID and basic info from Facebook Pages"""
+        try:
+            response = requests.get(
+                'https://graph.facebook.com/v18.0/me/accounts',
+                params={
+                    'access_token': access_token,
+                    'fields': 'instagram_business_account,name,id'
+                }
+            )
+            
+            if response.status_code != 200:
+                return None, None
+            
+            pages_data = response.json()
+            for page in pages_data.get('data', []):
+                if 'instagram_business_account' in page:
+                    ig_account_id = page['instagram_business_account']['id']
+                    
+                    # Get detailed info
+                    ig_response = requests.get(
+                        f'https://graph.facebook.com/v18.0/{ig_account_id}',
+                        params={
+                            'access_token': access_token,
+                            'fields': 'id,username,name,profile_picture_url,media_count,followers_count,follows_count,website,biography'
+                        }
+                    )
+                    
+                    if ig_response.status_code == 200:
+                        return ig_account_id, ig_response.json()
+            
+            return None, None
+        except Exception as e:
+            logger.error(f"Error getting Instagram Business Account ID: {e}")
+            return None, None
+    
+    @classmethod
+    def _fetch_account_insights(cls, access_token, instagram_account_id):
+        """Fetch Instagram Account Insights using Business API"""
+        try:
+            insights_response = requests.get(
+                f'https://graph.facebook.com/v18.0/{instagram_account_id}/insights',
+                params={
+                    'access_token': access_token,
+                    'metric': 'reach,impressions,profile_views',
+                    'period': 'day',
+                    'since': (timezone.now() - timezone.timedelta(days=30)).strftime('%Y-%m-%d'),
+                    'until': timezone.now().strftime('%Y-%m-%d')
+                }
+            )
+            
+            if insights_response.status_code == 200:
+                insights_data = insights_response.json()
+                metrics = {}
+                for insight in insights_data.get('data', []):
+                    metric_name = insight.get('name')
+                    values = insight.get('values', [])
+                    total_value = sum(item.get('value', 0) for item in values if item.get('value') is not None)
+                    metrics[f'total_{metric_name}'] = total_value
+                
+                return metrics
+            return {}
+        except Exception as e:
+            logger.error(f"Error fetching Instagram account insights: {e}")
+            return {}
+    
+    @classmethod
+    def fetch_recent_media(cls, account, limit=20):
+        """Fetch recent media posts for an account using Business API"""
+        try:
+            media_queryset = InstagramMedia.objects.filter(
+                account=account
+            ).order_by('-timestamp', '-created_at')[:limit]
+            
+            from .serializers import InstagramMediaSerializer
+            serializer = InstagramMediaSerializer(media_queryset, many=True)
+            return serializer.data
+        except Exception as e:
+            logger.error(f"Error fetching recent Instagram media: {e}")
+            return []
     
     @classmethod
     def _fetch_account_info(cls, access_token):
@@ -1280,7 +1342,7 @@ class SocialAnalyticsService:
     
     PLATFORM_SERVICES = {
         'youtube': YouTubeAnalyticsService,
-        'instagram': InstagramAnalyticsService,
+        'instagram': InstagramBusinessAnalyticsService,
         'linkedin': LinkedInAnalyticsService,  # Add LinkedIn service
     }
     

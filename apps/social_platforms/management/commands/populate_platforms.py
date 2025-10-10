@@ -9,15 +9,15 @@ class Command(BaseCommand):
         platforms_data = [
             {
                 'name': 'instagram',
-                'display_name': 'Instagram',
+                'display_name': 'Instagram Business',
                 'icon_class': 'fab fa-instagram',
                 'color_class': 'bg-gradient-to-r from-purple-500 to-pink-500',
-                'oauth_authorization_url': 'https://api.instagram.com/oauth/authorize',
-                'oauth_token_url': 'https://api.instagram.com/oauth/access_token',
-                'oauth_scope': 'user_profile,user_media',
-                # These need to be set with real values from Instagram Developer Portal
-                'oauth_client_id': '',  # Set this with your Instagram App ID
-                'oauth_client_secret': '',  # Set this with your Instagram App Secret
+                'oauth_authorization_url': 'https://www.facebook.com/v18.0/dialog/oauth',
+                'oauth_token_url': 'https://graph.facebook.com/v18.0/oauth/access_token',
+                'oauth_scope': 'instagram_basic,instagram_content_publish,instagram_manage_comments,instagram_manage_insights,pages_show_list,pages_read_engagement',
+                # These need to be set with real values from Facebook Developer Portal
+                'oauth_client_id': '',  # Set this with your Facebook App ID
+                'oauth_client_secret': '',  # Set this with your Facebook App Secret
             },
             {
                 'name': 'youtube',

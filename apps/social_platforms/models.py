@@ -364,47 +364,59 @@ class LinkedInAnalytics(models.Model):
 
 
 class InstagramAnalytics(models.Model):
-    """Dedicated model for Instagram account analytics"""
+    """Dedicated model for Instagram Business account analytics"""
     
     account = models.OneToOneField(UserSocialAccount, on_delete=models.CASCADE, related_name='instagram_analytics')
     
-    # Account metrics
+    # Account metrics (Business API provides more detailed data)
     follower_count = models.BigIntegerField(default=0)
     following_count = models.BigIntegerField(default=0)
     media_count = models.IntegerField(default=0)
     
-    # Account type and verification
-    account_type = models.CharField(max_length=20, blank=True)  # PERSONAL, BUSINESS, CREATOR
+    # Account type and verification (Business API exclusive)
+    account_type = models.CharField(max_length=20, default='BUSINESS')  # BUSINESS, CREATOR
     is_verified = models.BooleanField(default=False)
-    is_business_account = models.BooleanField(default=False)
+    is_business_account = models.BooleanField(default=True)
     
-    # Content metrics
+    # Content metrics with Business API insights
     total_likes = models.BigIntegerField(default=0)
     total_comments = models.BigIntegerField(default=0)
     total_video_views = models.BigIntegerField(default=0)
-    total_reach = models.BigIntegerField(default=0)
-    total_impressions = models.BigIntegerField(default=0)
+    total_reach = models.BigIntegerField(default=0)  # Business API exclusive
+    total_impressions = models.BigIntegerField(default=0)  # Business API exclusive
     
     # Growth metrics (30 days)
     follower_growth_30d = models.IntegerField(default=0)
     media_growth_30d = models.IntegerField(default=0)
     
-    # Engagement metrics
+    # Enhanced engagement metrics (Business API)
     average_likes_per_post = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     average_comments_per_post = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    average_reach_per_post = models.DecimalField(max_digits=15, decimal_places=2, default=0)  # Business API
+    average_impressions_per_post = models.DecimalField(max_digits=15, decimal_places=2, default=0)  # Business API
     engagement_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     
-    # Recent activity (30 days)
+    # Recent activity (30 days) with Business insights
     recent_posts_count = models.IntegerField(default=0)
     recent_total_likes = models.BigIntegerField(default=0)
     recent_total_comments = models.BigIntegerField(default=0)
-    recent_total_reach = models.BigIntegerField(default=0)
-    recent_total_impressions = models.BigIntegerField(default=0)
+    recent_total_reach = models.BigIntegerField(default=0)  # Business API
+    recent_total_impressions = models.BigIntegerField(default=0)  # Business API
+    recent_total_saves = models.BigIntegerField(default=0)  # Business API exclusive
+    recent_total_shares = models.BigIntegerField(default=0)  # Business API exclusive
     
-    # Profile information
+    # Business API exclusive metrics
+    profile_views = models.BigIntegerField(default=0)
+    website_clicks = models.BigIntegerField(default=0)
+    
+    # Profile information (enhanced with Business API)
     biography = models.TextField(blank=True)
     website = models.URLField(blank=True)
     profile_picture_url = models.URLField(blank=True)
+    
+    # Business account specific info
+    facebook_page_id = models.CharField(max_length=255, blank=True)  # Connected Facebook Page
+    facebook_page_name = models.CharField(max_length=255, blank=True)
     
     # Metadata
     last_updated = models.DateTimeField(auto_now=True)
@@ -412,25 +424,38 @@ class InstagramAnalytics(models.Model):
     
     class Meta:
         db_table = 'instagram_analytics'
-        verbose_name = 'Instagram Analytics'
-        verbose_name_plural = 'Instagram Analytics'
+        verbose_name = 'Instagram Business Analytics'
+        verbose_name_plural = 'Instagram Business Analytics'
     
     def __str__(self):
-        return f"Instagram Analytics - {self.account.platform_username}"
+        return f"Instagram Business Analytics - {self.account.platform_username}"
+    
+    @property
+    def recent_engagement_rate(self):
+        """Calculate engagement rate for recent posts using reach (Business API)"""
+        if self.recent_total_reach > 0:
+            total_engagement = self.recent_total_likes + self.recent_total_comments + self.recent_total_shares + self.recent_total_saves
+            return (total_engagement / self.recent_total_reach) * 100
+        elif self.follower_count > 0 and self.recent_posts_count > 0:
+            # Fallback to follower-based calculation
+            total_engagement = self.recent_total_likes + self.recent_total_comments
+            return (total_engagement / (self.follower_count * self.recent_posts_count)) * 100
+        return 0
 
 
 class InstagramMedia(models.Model):
-    """Model to store Instagram media posts/content"""
+    """Model to store Instagram Business media posts with enhanced insights"""
     
     MEDIA_TYPE_CHOICES = [
         ('IMAGE', 'Image'),
         ('VIDEO', 'Video'),
         ('CAROUSEL_ALBUM', 'Carousel Album'),
+        ('STORY', 'Story'),  # Business API supports stories
     ]
     
     account = models.ForeignKey(UserSocialAccount, on_delete=models.CASCADE, related_name='instagram_media')
     
-    # Instagram API data
+    # Instagram Business API data
     media_id = models.CharField(max_length=255, unique=True)
     media_type = models.CharField(max_length=20, choices=MEDIA_TYPE_CHOICES, default='IMAGE')
     media_url = models.URLField(blank=True)
@@ -439,9 +464,22 @@ class InstagramMedia(models.Model):
     # Content
     caption = models.TextField(blank=True)
     
-    # Analytics
+    # Basic analytics
     like_count = models.IntegerField(default=0)
     comments_count = models.IntegerField(default=0)
+    
+    # Business API exclusive insights
+    reach = models.IntegerField(default=0)  # Number of unique accounts that saw the post
+    impressions = models.IntegerField(default=0)  # Total number of times the post was seen
+    saved = models.IntegerField(default=0)  # Number of times the post was saved
+    video_views = models.IntegerField(default=0)  # For video content only
+    
+    # Engagement metrics (calculated)
+    engagement_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0)  # Based on reach
+    
+    # Publishing info (Business API allows scheduling)
+    is_published = models.BooleanField(default=True)
+    scheduled_publish_time = models.DateTimeField(null=True, blank=True)
     
     # Metadata
     timestamp = models.DateTimeField(null=True, blank=True)
@@ -450,12 +488,13 @@ class InstagramMedia(models.Model):
     
     class Meta:
         db_table = 'instagram_media'
-        verbose_name = 'Instagram Media'
-        verbose_name_plural = 'Instagram Media'
+        verbose_name = 'Instagram Business Media'
+        verbose_name_plural = 'Instagram Business Media'
         ordering = ['-timestamp', '-created_at']
         indexes = [
             models.Index(fields=['account', 'timestamp']),
             models.Index(fields=['media_type']),
+            models.Index(fields=['is_published']),
         ]
     
     def __str__(self):
@@ -463,14 +502,34 @@ class InstagramMedia(models.Model):
     
     @property
     def total_engagement(self):
-        return self.like_count + self.comments_count
+        """Calculate total engagement including saves (Business API metric)"""
+        return self.like_count + self.comments_count + self.saved
     
     @property
-    def engagement_rate(self):
-        # This would need follower count context, but we can calculate a basic rate
-        if hasattr(self.account, 'instagram_analytics') and self.account.instagram_analytics.follower_count:
-            return (self.total_engagement / self.account.instagram_analytics.follower_count) * 100
+    def reach_based_engagement_rate(self):
+        """Calculate engagement rate based on reach (more accurate than follower-based)"""
+        if self.reach > 0:
+            return (self.total_engagement / self.reach) * 100
         return 0
+    
+    @property
+    def impression_based_engagement_rate(self):
+        """Calculate engagement rate based on impressions"""
+        if self.impressions > 0:
+            return (self.total_engagement / self.impressions) * 100
+        return 0
+    
+    def save(self, *args, **kwargs):
+        # Calculate engagement rate before saving
+        if self.reach > 0:
+            self.engagement_rate = self.reach_based_engagement_rate
+        elif hasattr(self.account, 'instagram_analytics') and self.account.instagram_analytics.follower_count:
+            # Fallback to follower-based calculation
+            follower_count = self.account.instagram_analytics.follower_count
+            if follower_count > 0:
+                self.engagement_rate = (self.total_engagement / follower_count) * 100
+        
+        super().save(*args, **kwargs)
 
 
 class TwitterAnalytics(models.Model):

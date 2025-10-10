@@ -20,7 +20,7 @@ from .serializers import (
     YouTubeAnalyticsSerializer, LinkedInAnalyticsSerializer, InstagramAnalyticsSerializer, 
     TwitterAnalyticsSerializer, TikTokAnalyticsSerializer, UnifiedAnalyticsSerializer, InstagramMediaSerializer
 )
-from .services import SocialAnalyticsService, YouTubeAnalyticsService, InstagramAnalyticsService
+from .services import SocialAnalyticsService, YouTubeAnalyticsService, InstagramBusinessAnalyticsService
 
 
 def get_analytics_for_account(account):
@@ -128,13 +128,13 @@ def initiate_oauth(request, platform_name):
             f"scope={platform.oauth_scope}"
         )
     elif platform_name == 'instagram':
-        # Instagram uses Facebook OAuth with config_id for Instagram Graph API
+        # Instagram Business API uses Facebook OAuth
         oauth_params = {
             'client_id': platform.oauth_client_id,
             'redirect_uri': f"{settings.FRONTEND_URL}/auth/callback/{platform_name}",
+            'response_type': 'code',
             'scope': platform.oauth_scope,
             'state': state,
-            'response_type': 'code',
         }
         authorization_url = f"{platform.oauth_authorization_url}?{urlencode(oauth_params)}"
     else:
@@ -313,23 +313,26 @@ def get_platform_user_info(platform_name, access_token):
     
     try:
         if platform_name == 'instagram':
-            # Instagram Graph API - Get pages first, then Instagram account
+            # Instagram Business API - Get Instagram Business Account info via Facebook Graph API
             response = requests.get(
                 'https://graph.facebook.com/v18.0/me/accounts',
-                params={'access_token': access_token, 'fields': 'instagram_business_account,name'}
+                params={'access_token': access_token, 'fields': 'instagram_business_account,name,id'}
             )
             response.raise_for_status()
             data = response.json()
             
-            # Get Instagram business account from pages
+            # Find Instagram business account from Facebook pages
             ig_account = None
             for page in data.get('data', []):
                 if 'instagram_business_account' in page:
                     ig_account_id = page['instagram_business_account']['id']
-                    # Get Instagram account details
+                    # Get detailed Instagram Business Account info
                     ig_response = requests.get(
                         f'https://graph.facebook.com/v18.0/{ig_account_id}',
-                        params={'access_token': access_token, 'fields': 'id,username,name,profile_picture_url,media_count'}
+                        params={
+                            'access_token': access_token, 
+                            'fields': 'id,username,name,profile_picture_url,media_count,followers_count,follows_count,website,biography'
+                        }
                     )
                     if ig_response.status_code == 200:
                         ig_data = ig_response.json()
@@ -338,16 +341,29 @@ def get_platform_user_info(platform_name, access_token):
                             'username': ig_data.get('username', ''),
                             'display_name': ig_data.get('name', ig_data.get('username', '')),
                             'profile_picture': ig_data.get('profile_picture_url', ''),
-                            'permissions': {'media_count': ig_data.get('media_count', 0)}
+                            'permissions': {
+                                'media_count': ig_data.get('media_count', 0),
+                                'followers_count': ig_data.get('followers_count', 0),
+                                'follows_count': ig_data.get('follows_count', 0),
+                                'website': ig_data.get('website', ''),
+                                'biography': ig_data.get('biography', ''),
+                                'account_type': 'BUSINESS',
+                                'facebook_page_id': page.get('id', ''),
+                                'facebook_page_name': page.get('name', '')
+                            }
                         }
             
-            # If no Instagram business account found, return basic info
+            # If no Instagram business account found, return error info
             return {
-                'id': data.get('data', [{}])[0].get('id', 'unknown'),
-                'username': data.get('data', [{}])[0].get('name', 'Instagram User'),
-                'display_name': data.get('data', [{}])[0].get('name', 'Instagram User'),
+                'id': 'no_business_account',
+                'username': 'No Business Account',
+                'display_name': 'No Instagram Business Account Found',
                 'profile_picture': '',
-                'permissions': {}
+                'permissions': {
+                    'error': 'No Instagram Business Account connected to Facebook pages',
+                    'pages_found': len(data.get('data', [])),
+                    'help': 'Please ensure your Instagram account is connected to a Facebook Page and is set to Business or Creator account type'
+                }
             }
         elif platform_name == 'youtube':
             response = requests.get('https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true', headers=headers)
@@ -583,7 +599,7 @@ def get_detailed_analytics(request, account_id):
             
         elif account.platform.name == 'instagram':
             # Fetch recent media posts
-            recent_media = InstagramAnalyticsService.fetch_recent_media(account, limit=12)
+            recent_media = InstagramBusinessAnalyticsService.fetch_recent_media(account, limit=12)
             analytics_data['recent_media'] = recent_media
         
         return Response(analytics_data)
