@@ -37,7 +37,7 @@ class Command(BaseCommand):
                 'color_class': 'bg-blue-700',
                 'oauth_authorization_url': 'https://www.linkedin.com/oauth/v2/authorization',
                 'oauth_token_url': 'https://www.linkedin.com/oauth/v2/accessToken',
-                'oauth_scope': 'openid profile email r_basicprofile r_1st_connections_size r_organization_social r_organization_admin r_ads_reporting',
+                'oauth_scope': 'openid profile email w_member_social r_organization_social',
                 'oauth_client_id': '',  # Set with LinkedIn OAuth credentials
                 'oauth_client_secret': '',
             },

@@ -211,7 +211,7 @@ CORS_ALLOW_ALL_ORIGINS = config('CORS_ALLOW_ALL_ORIGINS', default=True, cast=boo
 CORS_ALLOW_CREDENTIALS = True
 
 CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', default='', cast=lambda v: [s.strip() for s in v.split(',')]) if config('CORS_ALLOWED_ORIGINS', default='') else [
-    "http://localhost:3001",
+    "http://localhost:3000",
     "http://127.0.0.1:3000",
     "https://synccontents.com",
     "https://www.synccontents.dev",
@@ -321,7 +321,7 @@ EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
 AUTH_USER_MODEL = 'accounts.User'
 
 # Frontend URL for OAuth redirects
-FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:3001')
+FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:3000')
 
 # Logging
 LOGGING = {

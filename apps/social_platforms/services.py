@@ -1,7 +1,10 @@
 import requests
 import logging
 from django.utils import timezone
-from .models import UserSocialAccount, SocialAccountAnalytics
+from .models import (
+    UserSocialAccount, LinkedInOrganization, LinkedInPost,
+    YouTubeAnalytics, LinkedInAnalytics, InstagramAnalytics, TwitterAnalytics, TikTokAnalytics, InstagramMedia
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,12 +95,12 @@ class YouTubeAnalyticsService:
             analytics_data = {
                 'subscriber_count': int(statistics.get('subscriberCount', 0)),
                 'video_count': int(statistics.get('videoCount', 0)),
-                'view_count': int(statistics.get('viewCount', 0)),
+                'total_view_count': int(statistics.get('viewCount', 0)),
                 'last_updated': timezone.now()
             }
             
             # Update or create analytics record
-            analytics, created = SocialAccountAnalytics.objects.get_or_create(
+            analytics, created = YouTubeAnalytics.objects.get_or_create(
                 account=account,
                 defaults=analytics_data
             )
@@ -561,37 +564,70 @@ class YouTubeAnalyticsService:
 
 
 class InstagramAnalyticsService:
-    """Service to fetch Instagram analytics"""
+    """Enhanced service to fetch Instagram analytics and media"""
     
     @classmethod
     def fetch_account_analytics(cls, account: UserSocialAccount):
-        """Fetch Instagram account analytics"""
+        """Fetch comprehensive Instagram account analytics and media"""
         if account.platform.name != 'instagram':
             return None
         
         try:
             access_token = account.decrypt_token(account.access_token)
             if not access_token:
+                logger.error(f"No access token available for Instagram account {account.id}")
                 return None
             
-            # Instagram Basic Display API
-            response = requests.get(
-                'https://graph.instagram.com/me',
-                params={
-                    'fields': 'account_type,media_count',
-                    'access_token': access_token
-                }
-            )
-            
-            response.raise_for_status()
-            data = response.json()
-            
+            # Initialize analytics data with defaults
             analytics_data = {
-                'media_count': data.get('media_count', 0),
-                'last_updated': timezone.now()
+                'last_updated': timezone.now(),
+                'follower_count': 0,
+                'following_count': 0,
+                'media_count': 0,
+                'account_type': '',
+                'total_likes': 0,
+                'total_comments': 0,
+                'average_likes_per_post': 0,
+                'average_comments_per_post': 0,
+                'engagement_rate': 0
             }
             
-            analytics, created = SocialAccountAnalytics.objects.get_or_create(
+            # Fetch basic account info
+            account_info = cls._fetch_account_info(access_token)
+            if account_info:
+                analytics_data.update({
+                    'media_count': account_info.get('media_count', 0),
+                    'account_type': account_info.get('account_type', 'PERSONAL')
+                })
+                logger.info(f"Updated basic info for Instagram account {account.id}")
+            
+            # Fetch user media and calculate engagement metrics
+            try:
+                media_data = cls._fetch_user_media(access_token, account)
+                if media_data:
+                    media_list = media_data.get('media', [])
+                    if media_list:
+                        total_likes = sum(media.get('like_count', 0) for media in media_list)
+                        total_comments = sum(media.get('comments_count', 0) for media in media_list)
+                        
+                        analytics_data.update({
+                            'total_likes': total_likes,
+                            'total_comments': total_comments,
+                            'average_likes_per_post': total_likes / len(media_list) if media_list else 0,
+                            'average_comments_per_post': total_comments / len(media_list) if media_list else 0,
+                        })
+                        
+                        # Calculate engagement rate (basic calculation)
+                        total_engagement = total_likes + total_comments
+                        if analytics_data['follower_count'] > 0:
+                            analytics_data['engagement_rate'] = (total_engagement / (analytics_data['follower_count'] * len(media_list))) * 100
+                        
+                        logger.info(f"Calculated engagement metrics for {len(media_list)} media posts")
+            except Exception as e:
+                logger.warning(f"Could not fetch media for Instagram account {account.id}: {e}")
+            
+            # Update or create analytics record
+            analytics, created = InstagramAnalytics.objects.get_or_create(
                 account=account,
                 defaults=analytics_data
             )
@@ -601,91 +637,304 @@ class InstagramAnalyticsService:
                     setattr(analytics, key, value)
                 analytics.save()
             
+            logger.info(f"Successfully updated Instagram analytics for account {account.id}")
             return analytics_data
             
         except Exception as e:
             logger.error(f"Error fetching Instagram analytics for account {account.id}: {e}")
             return None
+    
+    @classmethod
+    def _fetch_account_info(cls, access_token):
+        """Fetch basic account information"""
+        try:
+            response = requests.get(
+                'https://graph.instagram.com/me',
+                params={
+                    'fields': 'id,username,account_type,media_count',
+                    'access_token': access_token
+                }
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(f"Failed to fetch Instagram account info: {response.status_code} - {response.text}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error fetching Instagram account info: {e}")
+            return None
+    
+    @classmethod
+    def _fetch_user_media(cls, access_token, account):
+        """Fetch user's Instagram media posts"""
+        try:
+            # First get the list of media IDs
+            response = requests.get(
+                'https://graph.instagram.com/me/media',
+                params={
+                    'fields': 'id,media_type,media_url,permalink,caption,timestamp',
+                    'limit': 25,  # Instagram Basic Display API limit
+                    'access_token': access_token
+                }
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"Failed to fetch Instagram media: {response.status_code} - {response.text}")
+                return None
+            
+            data = response.json()
+            media_list = []
+            
+            # Process each media item
+            for media_item in data.get('data', []):
+                try:
+                    # Get detailed media info (Instagram Basic Display doesn't provide likes/comments directly)
+                    media_data = {
+                        'media_id': media_item.get('id'),
+                        'media_type': media_item.get('media_type', 'IMAGE'),
+                        'media_url': media_item.get('media_url', ''),
+                        'permalink': media_item.get('permalink', ''),
+                        'caption': media_item.get('caption', ''),
+                        'timestamp': media_item.get('timestamp'),
+                        'like_count': 0,  # Not available in Basic Display API
+                        'comments_count': 0,  # Not available in Basic Display API
+                    }
+                    
+                    # Create or update media record in database
+                    cls._create_or_update_media(media_data, account)
+                    media_list.append(media_data)
+                    
+                except Exception as media_error:
+                    logger.error(f"Error processing media item: {media_error}")
+                    continue
+            
+            logger.info(f"Successfully processed {len(media_list)} media items")
+            return {'media': media_list, 'total_count': len(media_list)}
+            
+        except Exception as e:
+            logger.error(f"Error fetching Instagram media: {e}")
+            return None
+    
+    @classmethod
+    def _create_or_update_media(cls, media_data, account):
+        """Create or update Instagram media record"""
+        try:
+            # Parse timestamp
+            timestamp = None
+            if media_data.get('timestamp'):
+                from datetime import datetime
+                timestamp = datetime.fromisoformat(media_data['timestamp'].replace('Z', '+00:00'))
+            
+            media, created = InstagramMedia.objects.get_or_create(
+                account=account,
+                media_id=media_data['media_id'],
+                defaults={
+                    'media_type': media_data.get('media_type', 'IMAGE'),
+                    'media_url': media_data.get('media_url', ''),
+                    'permalink': media_data.get('permalink', ''),
+                    'caption': media_data.get('caption', ''),
+                    'like_count': media_data.get('like_count', 0),
+                    'comments_count': media_data.get('comments_count', 0),
+                    'timestamp': timestamp
+                }
+            )
+            
+            if not created:
+                # Update existing media
+                media.media_type = media_data.get('media_type', media.media_type)
+                media.media_url = media_data.get('media_url', media.media_url)
+                media.permalink = media_data.get('permalink', media.permalink)
+                media.caption = media_data.get('caption', media.caption)
+                media.like_count = media_data.get('like_count', media.like_count)
+                media.comments_count = media_data.get('comments_count', media.comments_count)
+                if timestamp:
+                    media.timestamp = timestamp
+                media.save()
+            
+            return media
+            
+        except Exception as e:
+            logger.error(f"Error creating/updating Instagram media: {e}")
+            return None
+    
+    @classmethod
+    def fetch_recent_media(cls, account, limit=20):
+        """Fetch recent media posts for an account"""
+        try:
+            media_queryset = InstagramMedia.objects.filter(
+                account=account
+            ).order_by('-timestamp', '-created_at')[:limit]
+            
+            from .serializers import InstagramMediaSerializer
+            serializer = InstagramMediaSerializer(media_queryset, many=True)
+            return serializer.data
+            
+        except Exception as e:
+            logger.error(f"Error fetching recent Instagram media: {e}")
+            return []
+    
+    @classmethod
+    def get_media_details(cls, account, media_id):
+        """Get detailed information about a specific media post"""
+        try:
+            media = InstagramMedia.objects.get(
+                account=account,
+                media_id=media_id
+            )
+            
+            from .serializers import InstagramMediaSerializer
+            serializer = InstagramMediaSerializer(media)
+            return serializer.data
+            
+        except InstagramMedia.DoesNotExist:
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching Instagram media details: {e}")
+            return None
+    
+    @classmethod
+    def update_media_caption(cls, account, media_id, new_caption):
+        """Update media caption (local database only - Instagram API doesn't support editing)"""
+        try:
+            media = InstagramMedia.objects.get(
+                account=account,
+                media_id=media_id
+            )
+            
+            # Note: Instagram Basic Display API doesn't support editing captions
+            # This only updates our local database record
+            media.caption = new_caption
+            media.save()
+            
+            from .serializers import InstagramMediaSerializer
+            serializer = InstagramMediaSerializer(media)
+            return serializer.data
+            
+        except InstagramMedia.DoesNotExist:
+            return None
+        except Exception as e:
+            logger.error(f"Error updating Instagram media caption: {e}")
+            return None
+    
+    @classmethod
+    def delete_media(cls, account, media_id):
+        """Delete media from database (Instagram API doesn't support deletion via Basic Display API)"""
+        try:
+            media = InstagramMedia.objects.get(
+                account=account,
+                media_id=media_id
+            )
+            
+            # Note: Instagram Basic Display API doesn't support deleting posts
+            # This only removes from our local database
+            media.delete()
+            return True
+            
+        except InstagramMedia.DoesNotExist:
+            return False
+        except Exception as e:
+            logger.error(f"Error deleting Instagram media: {e}")
+            return False
 
 
 class LinkedInAnalyticsService:
-    """Service to fetch LinkedIn account analytics"""
+    """Enhanced service to fetch LinkedIn account analytics, posts, and organizations"""
     
     @classmethod
     def fetch_account_analytics(cls, account: UserSocialAccount):
-        """Fetch LinkedIn account analytics"""
+        """Fetch comprehensive LinkedIn account analytics"""
         if account.platform.name != 'linkedin':
             return None
         
         try:
             access_token = account.decrypt_token(account.access_token)
             if not access_token:
+                logger.error(f"No access token available for LinkedIn account {account.id}")
                 return None
             
             headers = {
                 'Authorization': f'Bearer {access_token}',
-                'Accept': 'application/json'
+                'Accept': 'application/json',
+                'X-Restli-Protocol-Version': '2.0.0'
             }
             
-            # Fetch basic profile information using the new scopes
-            profile_response = requests.get(
-                'https://api.linkedin.com/v2/userinfo',
-                headers=headers
-            )
-            
-            if profile_response.status_code != 200:
-                logger.error(f"Failed to fetch LinkedIn profile for account {account.id}: {profile_response.status_code}")
-                return None
-            
-            profile_data = profile_response.json()
-            logger.info(f"LinkedIn profile data for account {account.id}: {profile_data}")
-            
-            # Initialize analytics data
+            # Initialize analytics data with defaults
             analytics_data = {
-                'last_updated': timezone.now()
+                'last_updated': timezone.now(),
+                'connection_count': 0,
+                'follower_count': 0,
+                'post_count': 0,
+                'profile_views': 0,
+                'search_appearances': 0,
+                'total_organizations': 0,
+                'managed_pages': 0,
+                'recent_posts_count': 0,
+                'recent_total_likes': 0,
+                'recent_total_comments': 0,
+                'recent_total_shares': 0,
+                'recent_total_views': 0,
+                'average_post_engagement': 0
             }
             
-            # Get connection count - try different approaches based on available scopes
-            connection_count = 0
-            
-            # First, try to get from profile data if available
-            if 'connections' in profile_data:
-                connection_count = profile_data.get('connections', 0)
-                logger.info(f"Got connection count from profile data: {connection_count}")
+            # Fetch and update basic profile information
+            profile_data = cls._fetch_profile_info(headers)
+            if profile_data:
+                # Update account information
+                if 'sub' in profile_data:  # LinkedIn user ID
+                    account.platform_user_id = profile_data['sub']
+                if 'email' in profile_data:
+                    account.platform_username = profile_data['email']
+                if 'name' in profile_data:
+                    account.platform_display_name = profile_data['name']
+                if 'picture' in profile_data:
+                    account.profile_picture_url = profile_data['picture']
+                account.save()
+                logger.info(f"Updated account info for LinkedIn account {account.id}")
             else:
-                # Try alternative endpoints for connection data
-                # Note: LinkedIn's connection API has strict access requirements
-                # For most users, connection count is not directly accessible via API
-                # We'll set it to a placeholder value to indicate we tried to fetch it
-                connection_count = 0  # Placeholder - LinkedIn API restrictions prevent fetching this for most users
+                logger.warning(f"Could not fetch profile info for LinkedIn account {account.id}")
             
-            analytics_data['connection_count'] = connection_count
-            
-            # Try to get organization information if available
+            # Try to fetch organizations (requires r_organization_social scope)
             try:
-                # Check if the user has organization access using r_organization_admin scope
-                org_response = requests.get(
-                    'https://api.linkedin.com/v2/organizationAcls',
-                    headers=headers,
-                    params={
-                        'q': 'roleAssignee',
-                        'projection': '(elements*(organization~(localizedName,id)))'
-                    }
-                )
-                
-                if org_response.status_code == 200:
-                    org_data = org_response.json()
-                    if org_data.get('elements'):
-                        # User has organization access, get organization analytics
-                        org_id = org_data['elements'][0]['organization~']['id']
-                        org_analytics = cls._fetch_organization_analytics(access_token, org_id)
-                        if org_analytics:
-                            analytics_data.update(org_analytics)
+                organizations = cls._fetch_organizations(headers, account)
+                analytics_data['total_organizations'] = len(organizations)
+                analytics_data['managed_pages'] = len([org for org in organizations if org.get('can_post', False)])
+                logger.info(f"Found {len(organizations)} organizations for account {account.id}")
             except Exception as e:
-                logger.warning(f"Could not fetch organization data for LinkedIn account {account.id}: {e}")
+                logger.warning(f"Could not fetch organizations for LinkedIn account {account.id}: {e}")
+            
+            # Try to fetch user posts (requires w_member_social scope for posting, r_member_social for reading)
+            try:
+                posts_data = cls._fetch_user_posts(headers, account)
+                analytics_data['post_count'] = posts_data.get('total_count', 0)
+                
+                # Calculate engagement metrics from recent posts
+                recent_posts = posts_data.get('posts', [])
+                if recent_posts:
+                    analytics_data['recent_posts_count'] = len(recent_posts)
+                    total_likes = sum(post.get('like_count', 0) for post in recent_posts)
+                    total_comments = sum(post.get('comment_count', 0) for post in recent_posts)
+                    total_shares = sum(post.get('share_count', 0) for post in recent_posts)
+                    total_views = sum(post.get('view_count', 0) for post in recent_posts)
+                    
+                    analytics_data.update({
+                        'recent_total_likes': total_likes,
+                        'recent_total_comments': total_comments,
+                        'recent_total_shares': total_shares,
+                        'recent_total_views': total_views,
+                        'average_post_engagement': (total_likes + total_comments + total_shares) / len(recent_posts) if recent_posts else 0
+                    })
+                    logger.info(f"Calculated engagement metrics for {len(recent_posts)} posts")
+            except Exception as e:
+                logger.warning(f"Could not fetch posts for LinkedIn account {account.id}: {e}")
+            
+            # Note: Connection count API (r_1st_connections_size) is heavily restricted
+            # Most applications cannot access this, so we'll skip it for now
+            logger.info(f"Skipping connection count - requires special LinkedIn approval")
             
             # Update or create analytics record
-            analytics, created = SocialAccountAnalytics.objects.get_or_create(
+            analytics, created = LinkedInAnalytics.objects.get_or_create(
                 account=account,
                 defaults=analytics_data
             )
@@ -695,7 +944,7 @@ class LinkedInAnalyticsService:
                     setattr(analytics, key, value)
                 analytics.save()
             
-            logger.info(f"Updated LinkedIn analytics for account {account.id}: {analytics_data}")
+            logger.info(f"Successfully updated LinkedIn analytics for account {account.id}")
             return analytics_data
             
         except Exception as e:
@@ -703,35 +952,281 @@ class LinkedInAnalyticsService:
             return None
     
     @classmethod
-    def _fetch_organization_analytics(cls, access_token: str, org_id: str):
-        """Fetch organization-level analytics (requires Marketing Developer Platform)"""
+    def _fetch_profile_info(cls, headers):
+        """Fetch basic profile information"""
         try:
-            headers = {
-                'Authorization': f'Bearer {access_token}',
-                'Accept': 'application/json'
-            }
-            
-            # Fetch organization basic information using r_organization_admin scope
-            org_info_response = requests.get(
-                f'https://api.linkedin.com/v2/organizations/{org_id}',
+            response = requests.get(
+                'https://api.linkedin.com/v2/userinfo',
                 headers=headers
             )
             
-            org_name = "Unknown Organization"
-            if org_info_response.status_code == 200:
-                org_info = org_info_response.json()
-                org_name = org_info.get('localizedName', org_name)
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(f"Failed to fetch LinkedIn profile: {response.status_code} - {response.text}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error fetching LinkedIn profile: {e}")
+            return None
+    
+    @classmethod
+    def _fetch_organizations(cls, headers, account):
+        """Fetch user's organizations and company pages"""
+        try:
+            # Use the correct LinkedIn v2 API endpoint for organization access control lists
+            response = requests.get(
+                'https://api.linkedin.com/v2/organizationAcls',
+                headers=headers,
+                params={
+                    'q': 'roleAssignee',
+                    'projection': '(elements*(organization~(id,localizedName,localizedDescription,localizedWebsite,logoV2,locations*,industries*),roleAssignee,state))'
+                }
+            )
             
-            # For detailed analytics, we would need to use the LinkedIn Marketing API
-            # This requires special access and is beyond the scope of basic integration
-            # For now, we'll return basic organization info
-            return {
-                'connection_count': 0,  # Placeholder - would need Marketing API for real data
-            }
+            logger.info(f"Organization ACL response status: {response.status_code}")
+            if response.status_code != 200:
+                logger.warning(f"Organization ACL request failed: {response.status_code} - {response.text[:500]}")
+                return []
+            
+            organizations = []
+            data = response.json()
+            
+            for element in data.get('elements', []):
+                try:
+                    org_info = element.get('organization~', {})
+                    if not org_info or 'id' not in org_info:
+                        continue
+                    
+                    # Extract organization data
+                    org_data = {
+                        'account': account,
+                        'organization_id': str(org_info['id']),
+                        'name': org_info.get('localizedName', 'Unknown Organization'),
+                        'description': org_info.get('localizedDescription', ''),
+                        'website_url': org_info.get('localizedWebsite', ''),
+                        'user_role': element.get('role', 'MEMBER'),
+                        'is_admin': 'ADMIN' in str(element.get('role', '')),
+                        'can_post': element.get('state') == 'APPROVED'
+                    }
+                    
+                    # Extract industry information
+                    if 'industries' in org_info and org_info['industries']:
+                        org_data['industry'] = org_info['industries'][0].get('localizedName', '')
+                    
+                    # Extract logo URL
+                    if 'logoV2' in org_info:
+                        org_data['logo_url'] = cls._extract_media_url(org_info['logoV2'])
+                    
+                    # Create or update organization record
+                    org, created = LinkedInOrganization.objects.get_or_create(
+                        account=account,
+                        organization_id=org_data['organization_id'],
+                        defaults=org_data
+                    )
+                    
+                    if not created:
+                        # Update existing organization
+                        for key, value in org_data.items():
+                            if key not in ['account', 'organization_id']:
+                                setattr(org, key, value)
+                        org.save()
+                    
+                    organizations.append(org_data)
+                    logger.info(f"Processed organization: {org_data['name']} (ID: {org_data['organization_id']})")
+                    
+                except Exception as org_error:
+                    logger.error(f"Error processing organization element: {org_error}")
+                    continue
+            
+            logger.info(f"Successfully processed {len(organizations)} organizations")
+            return organizations
             
         except Exception as e:
-            logger.error(f"Error fetching organization analytics: {e}")
+            logger.error(f"Error fetching LinkedIn organizations: {e}")
+            return []
+    
+    @classmethod
+    def _fetch_user_posts(cls, headers, account):
+        """Fetch user's LinkedIn posts/activities"""
+        try:
+            if not account.platform_user_id:
+                logger.warning(f"No platform_user_id for account {account.id}")
+                return {'posts': [], 'total_count': 0}
+            
+            # Use the correct LinkedIn v2 UGC Posts API
+            response = requests.get(
+                'https://api.linkedin.com/v2/ugcPosts',
+                headers=headers,
+                params={
+                    'q': 'authors',
+                    'authors': f'urn:li:person:{account.platform_user_id}',
+                    'count': 20,  # Reduced count for reliability
+                    'sortBy': 'LAST_MODIFIED'
+                }
+            )
+            
+            logger.info(f"UGC Posts response status: {response.status_code}")
+            if response.status_code != 200:
+                logger.warning(f"UGC Posts request failed: {response.status_code} - {response.text[:500]}")
+                return {'posts': [], 'total_count': 0}
+            
+            posts_data = {'posts': [], 'total_count': 0}
+            data = response.json()
+            
+            # Get total count from paging info
+            paging = data.get('paging', {})
+            posts_data['total_count'] = paging.get('total', 0)
+            
+            # Process each post
+            for element in data.get('elements', []):
+                try:
+                    post_data = cls._parse_ugc_post(element, account)
+                    if post_data:
+                        posts_data['posts'].append(post_data)
+                        
+                        # Create or update post record in database
+                        cls._create_or_update_post(post_data, account)
+                        
+                except Exception as post_error:
+                    logger.error(f"Error processing post element: {post_error}")
+                    continue
+            
+            logger.info(f"Successfully processed {len(posts_data['posts'])} posts")
+            return posts_data
+            
+        except Exception as e:
+            logger.error(f"Error fetching LinkedIn posts: {e}")
+            return {'posts': [], 'total_count': 0}
+    
+    @classmethod
+    def _parse_ugc_post(cls, element, account):
+        """Parse UGC post data from LinkedIn API"""
+        try:
+            post_id = element.get('id', '').replace('urn:li:ugcPost:', '')
+            specific_content = element.get('specificContent', {})
+            ugc_header = element.get('ugcPostHeader', {})
+            social_detail = element.get('socialDetail', {})
+            
+            # Extract text content
+            text_content = ''
+            if 'ugcPostHeader' in element:
+                text_content = ugc_header.get('text', '')
+            
+            # Extract media URLs
+            media_urls = []
+            if 'com.linkedin.ugc.ShareContent' in specific_content:
+                share_content = specific_content['com.linkedin.ugc.ShareContent']
+                for media in share_content.get('media', []):
+                    media_url = cls._extract_media_url(media)
+                    if media_url:
+                        media_urls.append(media_url)
+            
+            # Extract engagement metrics
+            engagement = social_detail.get('totalSocialActivityCounts', {})
+            
+            post_data = {
+                'post_id': post_id,
+                'urn': element.get('id', ''),
+                'text_content': text_content,
+                'media_urls': media_urls,
+                'like_count': engagement.get('numLikes', 0),
+                'comment_count': engagement.get('numComments', 0),
+                'share_count': engagement.get('numShares', 0),
+                'view_count': engagement.get('numViews', 0),
+                'published_at': timezone.datetime.fromtimestamp(element.get('created', {}).get('time', 0) / 1000, tz=timezone.utc) if element.get('created') else None,
+                'last_modified_at': timezone.datetime.fromtimestamp(element.get('lastModified', {}).get('time', 0) / 1000, tz=timezone.utc) if element.get('lastModified') else None,
+                'state': element.get('lifecycleState', 'PUBLISHED'),
+                'post_type': 'UGC_POST'
+            }
+            
+            return post_data
+            
+        except Exception as e:
+            logger.error(f"Error parsing UGC post: {e}")
             return None
+    
+    @classmethod
+    def _create_or_update_post(cls, post_data, account):
+        """Create or update LinkedIn post record"""
+        try:
+            post, created = LinkedInPost.objects.get_or_create(
+                account=account,
+                post_id=post_data['post_id'],
+                defaults=post_data
+            )
+            
+            if not created:
+                for key, value in post_data.items():
+                    if key not in ['account', 'post_id']:
+                        setattr(post, key, value)
+                post.save()
+            
+            return post
+            
+        except Exception as e:
+            logger.error(f"Error creating/updating LinkedIn post: {e}")
+            return None
+    
+    @classmethod
+    def _fetch_connections(cls, headers):
+        """Fetch connection count (limited by LinkedIn API permissions)"""
+        try:
+            # This endpoint requires r_1st_connections_size scope which is restricted
+            response = requests.get(
+                'https://api.linkedin.com/v2/people-search',
+                headers=headers,
+                params={'facets': 'List(network:(F))'}
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                return {'total': data.get('paging', {}).get('total', 0)}
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error fetching LinkedIn connections: {e}")
+            return None
+    
+    @classmethod
+    def _fetch_company_follower_count(cls, headers, org_id):
+        """Fetch follower count for company page"""
+        try:
+            response = requests.get(
+                f'https://api.linkedin.com/v2/networkSizes/{org_id}',
+                headers=headers,
+                params={'edgeType': 'CompanyFollowedByMember'}
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                return data.get('firstDegreeSize', 0)
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error fetching company follower count: {e}")
+            return None
+    
+    @classmethod
+    def _extract_media_url(cls, media_object):
+        """Extract media URL from LinkedIn media object"""
+        try:
+            if isinstance(media_object, dict):
+                # Handle different media object structures
+                if 'digitalmediaAsset' in media_object:
+                    return media_object['digitalmediaAsset']
+                elif 'com.linkedin.digitalmedia.mediaartifact.StillImage' in media_object:
+                    return media_object['com.linkedin.digitalmedia.mediaartifact.StillImage']['storageArtifact']['com.linkedin.digitalmedia.mediaartifact.StorageArtifact']['fileIdentifyingUrlPathSegment']
+                elif 'url' in media_object:
+                    return media_object['url']
+            
+            return ''
+            
+        except Exception as e:
+            logger.error(f"Error extracting media URL: {e}")
+            return ''
 
 
 class SocialAnalyticsService:

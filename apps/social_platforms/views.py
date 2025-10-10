@@ -1,9 +1,11 @@
+from typing import Any
 from rest_framework import status
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from django.conf import settings
+from django.utils import timezone
 import requests
 import secrets
 import string
@@ -12,9 +14,55 @@ from urllib.parse import urlencode
 
 logger = logging.getLogger(__name__)
 
-from .models import SocialPlatform, UserSocialAccount, SocialAccountAnalytics
-from .serializers import SocialPlatformSerializer, UserSocialAccountSerializer, SocialAccountAnalyticsSerializer
-from .services import SocialAnalyticsService, YouTubeAnalyticsService
+from .models import SocialPlatform, UserSocialAccount, LinkedInOrganization, LinkedInPost, YouTubeAnalytics, LinkedInAnalytics, InstagramAnalytics, TwitterAnalytics, TikTokAnalytics, InstagramMedia
+from .serializers import (
+    SocialPlatformSerializer, UserSocialAccountSerializer, LinkedInOrganizationSerializer, LinkedInPostSerializer,
+    YouTubeAnalyticsSerializer, LinkedInAnalyticsSerializer, InstagramAnalyticsSerializer, 
+    TwitterAnalyticsSerializer, TikTokAnalyticsSerializer, UnifiedAnalyticsSerializer, InstagramMediaSerializer
+)
+from .services import SocialAnalyticsService, YouTubeAnalyticsService, InstagramAnalyticsService
+
+
+def get_analytics_for_account(account):
+    """Helper function to get analytics data for any platform account"""
+    platform = account.platform.name
+    
+    # Try to get platform-specific analytics
+    try:
+        if platform == 'youtube':
+            analytics = YouTubeAnalytics.objects.get(account=account)
+            serializer = YouTubeAnalyticsSerializer(analytics)
+        elif platform == 'linkedin':
+            analytics = LinkedInAnalytics.objects.get(account=account)
+            serializer = LinkedInAnalyticsSerializer(analytics)
+        elif platform == 'instagram':
+            analytics = InstagramAnalytics.objects.get(account=account)
+            serializer = InstagramAnalyticsSerializer(analytics)
+        elif platform == 'twitter':
+            analytics = TwitterAnalytics.objects.get(account=account)
+            serializer = TwitterAnalyticsSerializer(analytics)
+        elif platform == 'tiktok':
+            analytics = TikTokAnalytics.objects.get(account=account)
+            serializer = TikTokAnalyticsSerializer(analytics)
+        else:
+            raise Exception(f"Unsupported platform: {platform}")
+        
+        # Use UnifiedAnalyticsSerializer to create consistent response
+        unified_serializer = UnifiedAnalyticsSerializer(analytics)
+        return unified_serializer.data
+        
+    except (YouTubeAnalytics.DoesNotExist, LinkedInAnalytics.DoesNotExist, 
+            InstagramAnalytics.DoesNotExist, TwitterAnalytics.DoesNotExist,
+            TikTokAnalytics.DoesNotExist):
+        # Return basic account info if no analytics exist yet
+        return {
+            'account_id': account.id,
+            'platform_name': account.platform.name,
+            'platform_display_name': account.platform.display_name,
+            'platform_username': account.platform_username,
+            'last_updated': account.updated_at.isoformat(),
+            'message': 'Analytics data not available yet'
+        }
 
 
 @api_view(['GET'])
@@ -148,7 +196,7 @@ def handle_oauth_callback(request, platform_name):
             'client_secret': platform.oauth_client_secret,
         }
     else:
-        token_data = {
+        token_data: dict[str, Any] = {
             'client_id': platform.oauth_client_id,
             'client_secret': platform.oauth_client_secret,
             'code': code,
@@ -182,7 +230,7 @@ def handle_oauth_callback(request, platform_name):
             return Response({
                 'error': 'Failed to get user information from platform'
             }, status=status.HTTP_400_BAD_REQUEST)
-        
+        print("-------------",platform)
         # Create or update social account
         social_account, created = UserSocialAccount.objects.update_or_create(
             user=request.user,
@@ -198,6 +246,17 @@ def handle_oauth_callback(request, platform_name):
                 'permissions': user_info.get('permissions', {}),
             }
         )
+        
+        # Automatically fetch analytics after successful connection
+        try:
+            from .services import SocialAnalyticsService
+            print(f"DEBUG: Triggering analytics fetch for {platform_name} account {social_account.id}")
+            analytics_result = SocialAnalyticsService.update_account_analytics(social_account)
+            print(f"DEBUG: Analytics fetch result: {'success' if analytics_result else 'failed'}")
+        except Exception as analytics_error:
+            print(f"DEBUG: Analytics fetch error: {analytics_error}")
+            # Don't fail the connection if analytics fetch fails
+            pass
         
         # Clean up session
         if f'oauth_state_{platform_name}' in request.session:
@@ -336,12 +395,12 @@ def get_account_analytics(request, account_id=None):
             # Update analytics data
             analytics_data = SocialAnalyticsService.update_account_analytics(account)
             
-            # Get the analytics object
+            # Get the analytics object based on platform
             try:
-                analytics = SocialAccountAnalytics.objects.get(account=account)
-                serializer = SocialAccountAnalyticsSerializer(analytics)
-                return Response(serializer.data)
-            except SocialAccountAnalytics.DoesNotExist:
+                analytics_data = get_analytics_for_account(account)
+                return Response(analytics_data)
+            except Exception as e:
+                logger.error(f"Error getting analytics for account {account.id}: {e}")
                 return Response({
                     'message': 'No analytics data available yet',
                     'platform': account.platform.name
@@ -359,22 +418,20 @@ def get_account_analytics(request, account_id=None):
             for account in accounts:
                 logger.info(f"Processing account {account.id} - {account.platform.name}")
                 try:
-                    analytics = SocialAccountAnalytics.objects.get(account=account)
-                    serializer = SocialAccountAnalyticsSerializer(analytics)
-                    analytics_list.append(serializer.data)
+                    analytics_data = get_analytics_for_account(account)
+                    analytics_list.append(analytics_data)
                     logger.info(f"Found existing analytics for account {account.id}")
-                except SocialAccountAnalytics.DoesNotExist:
+                except Exception as e:
                     logger.info(f"No analytics found for account {account.id}, attempting to fetch...")
                     # Try to fetch analytics if not exists
                     analytics_data = SocialAnalyticsService.update_account_analytics(account)
                     if analytics_data:
                         try:
-                            analytics = SocialAccountAnalytics.objects.get(account=account)
-                            serializer = SocialAccountAnalyticsSerializer(analytics)
-                            analytics_list.append(serializer.data)
+                            analytics_data = get_analytics_for_account(account)
+                            analytics_list.append(analytics_data)
                             logger.info(f"Successfully fetched analytics for account {account.id}")
-                        except SocialAccountAnalytics.DoesNotExist:
-                            logger.error(f"Failed to create analytics for account {account.id}")
+                        except Exception as fetch_error:
+                            logger.error(f"Failed to create analytics for account {account.id}: {fetch_error}")
                             # Add placeholder data
                             analytics_list.append({
                                 'account_id': account.id,
@@ -423,13 +480,17 @@ def refresh_account_analytics(request, account_id):
         
         if analytics_data:
             # Get updated analytics
-            analytics = SocialAccountAnalytics.objects.get(account=account)
-            serializer = SocialAccountAnalyticsSerializer(analytics)
-            
-            return Response({
-                'message': 'Analytics updated successfully',
-                'data': serializer.data
-            })
+            try:
+                analytics_data = get_analytics_for_account(account)
+                return Response({
+                    'message': 'Analytics updated successfully',
+                    'data': analytics_data
+                })
+            except Exception as e:
+                logger.error(f"Error getting updated analytics for account {account_id}: {e}")
+                return Response({
+                    'error': 'Analytics updated but failed to retrieve updated data'
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         else:
             return Response({
                 'error': 'Failed to fetch analytics from platform API'
@@ -462,9 +523,9 @@ def get_detailed_analytics(request, account_id):
         
         # Get analytics object
         try:
-            analytics = SocialAccountAnalytics.objects.get(account=account)
-            analytics_data = SocialAccountAnalyticsSerializer(analytics).data
-        except SocialAccountAnalytics.DoesNotExist:
+            analytics_data = get_analytics_for_account(account)
+        except Exception as e:
+            logger.error(f"Error getting analytics for account {account.id}: {e}")
             analytics_data = {
                 'platform_name': account.platform.name,
                 'platform_display_name': account.platform.display_name,
@@ -480,8 +541,9 @@ def get_detailed_analytics(request, account_id):
             analytics_data['recent_videos'] = recent_videos
             
         elif account.platform.name == 'instagram':
-            # Add Instagram specific detailed data here
-            pass
+            # Fetch recent media posts
+            recent_media = InstagramAnalyticsService.fetch_recent_media(account, limit=12)
+            analytics_data['recent_media'] = recent_media
         
         return Response(analytics_data)
         
@@ -718,4 +780,533 @@ def get_supported_languages(request, account_id):
         logger.error(f"Error fetching supported languages: {e}")
         return Response({
             'error': 'Failed to fetch supported languages'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# LinkedIn-specific endpoints
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_linkedin_organizations(request, account_id):
+    """Get LinkedIn organizations for a specific account"""
+    try:
+        account = UserSocialAccount.objects.get(
+            id=account_id,
+            user=request.user,
+            platform__name='linkedin'
+        )
+        
+        organizations = LinkedInOrganization.objects.filter(account=account)
+        serializer = LinkedInOrganizationSerializer(organizations, many=True)
+        
+        return Response({
+            'organizations': serializer.data,
+            'total_count': organizations.count()
+        })
+        
+    except UserSocialAccount.DoesNotExist:
+        return Response({
+            'error': 'LinkedIn account not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        logger.error(f"Error fetching LinkedIn organizations: {e}")
+        return Response({
+            'error': 'Failed to fetch organizations'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_linkedin_posts(request, account_id):
+    """Get LinkedIn posts for a specific account"""
+    try:
+        account = UserSocialAccount.objects.get(
+            id=account_id,
+            user=request.user,
+            platform__name='linkedin'
+        )
+        
+        # Pagination parameters
+        page = int(request.GET.get('page', 1))
+        page_size = int(request.GET.get('page_size', 20))
+        offset = (page - 1) * page_size
+        
+        # Filter parameters
+        post_type = request.GET.get('type')
+        organization_id = request.GET.get('organization')
+        
+        # Build query
+        posts_query = LinkedInPost.objects.filter(account=account)
+        
+        if post_type:
+            posts_query = posts_query.filter(post_type=post_type)
+        
+        if organization_id:
+            posts_query = posts_query.filter(organization__organization_id=organization_id)
+        
+        # Get total count
+        total_count = posts_query.count()
+        
+        # Apply pagination
+        posts = posts_query[offset:offset + page_size]
+        
+        serializer = LinkedInPostSerializer(posts, many=True)
+        
+        return Response({
+            'posts': serializer.data,
+            'pagination': {
+                'page': page,
+                'page_size': page_size,
+                'total_count': total_count,
+                'total_pages': (total_count + page_size - 1) // page_size
+            }
+        })
+        
+    except UserSocialAccount.DoesNotExist:
+        return Response({
+            'error': 'LinkedIn account not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        logger.error(f"Error fetching LinkedIn posts: {e}")
+        return Response({
+            'error': 'Failed to fetch posts'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_linkedin_post_detail(request, account_id, post_id):
+    """Get detailed information about a specific LinkedIn post"""
+    try:
+        account = UserSocialAccount.objects.get(
+            id=account_id,
+            user=request.user,
+            platform__name='linkedin'
+        )
+        
+        post = LinkedInPost.objects.get(
+            account=account,
+            post_id=post_id
+        )
+        
+        serializer = LinkedInPostSerializer(post)
+        
+        return Response(serializer.data)
+        
+    except UserSocialAccount.DoesNotExist:
+        return Response({
+            'error': 'LinkedIn account not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    except LinkedInPost.DoesNotExist:
+        return Response({
+            'error': 'Post not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        logger.error(f"Error fetching LinkedIn post detail: {e}")
+        return Response({
+            'error': 'Failed to fetch post detail'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['PUT', 'PATCH'])
+@permission_classes([IsAuthenticated])
+def update_linkedin_post(request, account_id, post_id):
+    """Update a LinkedIn post"""
+    try:
+        account = UserSocialAccount.objects.get(
+            id=account_id,
+            user=request.user,
+            platform__name='linkedin'
+        )
+        
+        post = LinkedInPost.objects.get(
+            account=account,
+            post_id=post_id
+        )
+        
+        # LinkedIn doesn't allow editing published posts via API
+        # This endpoint updates our local data only
+        serializer = LinkedInPostSerializer(post, data=request.data, partial=True)
+        
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        else:
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+    except UserSocialAccount.DoesNotExist:
+        return Response({
+            'error': 'LinkedIn account not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    except LinkedInPost.DoesNotExist:
+        return Response({
+            'error': 'Post not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        logger.error(f"Error updating LinkedIn post: {e}")
+        return Response({
+            'error': 'Failed to update post'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def delete_linkedin_post(request, account_id, post_id):
+    """Delete a LinkedIn post"""
+    try:
+        account = UserSocialAccount.objects.get(
+            id=account_id,
+            user=request.user,
+            platform__name='linkedin'
+        )
+        
+        post = LinkedInPost.objects.get(
+            account=account,
+            post_id=post_id
+        )
+        
+        # Try to delete from LinkedIn via API
+        access_token = account.decrypt_token(account.access_token)
+        if access_token:
+            headers = {
+                'Authorization': f'Bearer {access_token}',
+                'Accept': 'application/json'
+            }
+            
+            # Delete from LinkedIn
+            delete_response = requests.delete(
+                f'https://api.linkedin.com/v2/ugcPosts/{post.urn}',
+                headers=headers
+            )
+            
+            if delete_response.status_code not in [200, 204, 404]:
+                return Response({
+                    'error': 'Failed to delete post from LinkedIn',
+                    'details': delete_response.text
+                }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Delete from our database
+        post.delete()
+        
+        return Response({
+            'message': 'Post deleted successfully'
+        })
+        
+    except UserSocialAccount.DoesNotExist:
+        return Response({
+            'error': 'LinkedIn account not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    except LinkedInPost.DoesNotExist:
+        return Response({
+            'error': 'Post not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        logger.error(f"Error deleting LinkedIn post: {e}")
+        return Response({
+            'error': 'Failed to delete post'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def create_linkedin_post(request, account_id):
+    """Create a new LinkedIn post"""
+    try:
+        account = UserSocialAccount.objects.get(
+            id=account_id,
+            user=request.user,
+            platform__name='linkedin'
+        )
+        
+        access_token = account.decrypt_token(account.access_token)
+        if not access_token:
+            return Response({
+                'error': 'Access token not available'
+            }, status=status.HTTP_401_UNAUTHORIZED)
+        
+        # Extract post data
+        text_content = request.data.get('text_content', '')
+        organization_id = request.data.get('organization_id')
+        media_urls = request.data.get('media_urls', [])
+        
+        # Determine author URN
+        if organization_id:
+            author_urn = f'urn:li:organization:{organization_id}'
+        else:
+            author_urn = f'urn:li:person:{account.platform_user_id}'
+        
+        # Prepare post data for LinkedIn API
+        post_data = {
+            'author': author_urn,
+            'lifecycleState': 'PUBLISHED',
+            'specificContent': {
+                'com.linkedin.ugc.ShareContent': {
+                    'shareCommentary': {
+                        'text': text_content
+                    },
+                    'shareMediaCategory': 'NONE'
+                }
+            },
+            'visibility': {
+                'com.linkedin.ugc.MemberNetworkVisibility': 'PUBLIC'
+            }
+        }
+        
+        # Add media if provided
+        if media_urls:
+            post_data['specificContent']['com.linkedin.ugc.ShareContent']['shareMediaCategory'] = 'IMAGE'
+            post_data['specificContent']['com.linkedin.ugc.ShareContent']['media'] = [
+                {
+                    'status': 'READY',
+                    'description': {
+                        'text': 'Shared media'
+                    },
+                    'media': url,
+                    'title': {
+                        'text': 'Shared media'
+                    }
+                } for url in media_urls
+            ]
+        
+        # Post to LinkedIn
+        headers = {
+            'Authorization': f'Bearer {access_token}',
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+        }
+        
+        response = requests.post(
+            'https://api.linkedin.com/v2/ugcPosts',
+            headers=headers,
+            json=post_data
+        )
+        
+        if response.status_code != 201:
+            return Response({
+                'error': 'Failed to create post on LinkedIn',
+                'details': response.text
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Parse response and save to database
+        linkedin_response = response.json()
+        post_urn = linkedin_response.get('id', '')
+        post_id = post_urn.replace('urn:li:ugcPost:', '')
+        
+        # Get organization if specified
+        organization = None
+        if organization_id:
+            try:
+                organization = LinkedInOrganization.objects.get(
+                    account=account,
+                    organization_id=organization_id
+                )
+            except LinkedInOrganization.DoesNotExist:
+                pass
+        
+        # Create post record
+        post = LinkedInPost.objects.create(
+            account=account,
+            organization=organization,
+            post_id=post_id,
+            urn=post_urn,
+            text_content=text_content,
+            media_urls=media_urls,
+            state='PUBLISHED',
+            post_type='UGC_POST',
+            published_at=timezone.now()
+        )
+        
+        serializer = LinkedInPostSerializer(post)
+        
+        return Response({
+            'message': 'Post created successfully',
+            'post': serializer.data
+        }, status=status.HTTP_201_CREATED)
+        
+    except UserSocialAccount.DoesNotExist:
+        return Response({
+            'error': 'LinkedIn account not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        logger.error(f"Error creating LinkedIn post: {e}")
+        return Response({
+            'error': 'Failed to create post',
+            'details': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# Instagram-specific endpoints
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_instagram_media(request, account_id):
+    """Get Instagram media posts for a specific account"""
+    try:
+        account = UserSocialAccount.objects.get(
+            id=account_id,
+            user=request.user,
+            platform__name='instagram'
+        )
+        
+        # Pagination parameters
+        page = int(request.GET.get('page', 1))
+        page_size = int(request.GET.get('page_size', 20))
+        offset = (page - 1) * page_size
+        
+        # Filter parameters
+        media_type = request.GET.get('type')
+        
+        # Build query
+        media_query = InstagramMedia.objects.filter(account=account)
+        
+        if media_type:
+            media_query = media_query.filter(media_type=media_type)
+        
+        # Get total count
+        total_count = media_query.count()
+        
+        # Apply pagination
+        media_posts = media_query[offset:offset + page_size]
+        
+        serializer = InstagramMediaSerializer(media_posts, many=True)
+        
+        return Response({
+            'media': serializer.data,
+            'pagination': {
+                'page': page,
+                'page_size': page_size,
+                'total_count': total_count,
+                'total_pages': (total_count + page_size - 1) // page_size
+            }
+        })
+        
+    except UserSocialAccount.DoesNotExist:
+        return Response({
+            'error': 'Instagram account not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        logger.error(f"Error fetching Instagram media: {e}")
+        return Response({
+            'error': 'Failed to fetch media'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_instagram_media_detail(request, account_id, media_id):
+    """Get detailed information about a specific Instagram media post"""
+    try:
+        account = UserSocialAccount.objects.get(
+            id=account_id,
+            user=request.user,
+            platform__name='instagram'
+        )
+        
+        media = InstagramMedia.objects.get(
+            account=account,
+            media_id=media_id
+        )
+        
+        serializer = InstagramMediaSerializer(media)
+        
+        return Response(serializer.data)
+        
+    except UserSocialAccount.DoesNotExist:
+        return Response({
+            'error': 'Instagram account not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    except InstagramMedia.DoesNotExist:
+        return Response({
+            'error': 'Media not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        logger.error(f"Error fetching Instagram media detail: {e}")
+        return Response({
+            'error': 'Failed to fetch media detail'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['PUT', 'PATCH'])
+@permission_classes([IsAuthenticated])
+def update_instagram_media(request, account_id, media_id):
+    """Update Instagram media (caption only - Instagram API doesn't support full editing)"""
+    try:
+        account = UserSocialAccount.objects.get(
+            id=account_id,
+            user=request.user,
+            platform__name='instagram'
+        )
+        
+        media = InstagramMedia.objects.get(
+            account=account,
+            media_id=media_id
+        )
+        
+        # Instagram Basic Display API doesn't support editing posts
+        # This endpoint updates our local data only
+        new_caption = request.data.get('caption')
+        if new_caption is not None:
+            media.caption = new_caption
+            media.save()
+        
+        serializer = InstagramMediaSerializer(media)
+        
+        return Response({
+            'message': 'Media updated successfully (local database only)',
+            'note': 'Instagram API does not support editing published posts',
+            'media': serializer.data
+        })
+        
+    except UserSocialAccount.DoesNotExist:
+        return Response({
+            'error': 'Instagram account not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    except InstagramMedia.DoesNotExist:
+        return Response({
+            'error': 'Media not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        logger.error(f"Error updating Instagram media: {e}")
+        return Response({
+            'error': 'Failed to update media'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def delete_instagram_media(request, account_id, media_id):
+    """Delete Instagram media from database (Instagram API doesn't support deletion)"""
+    try:
+        account = UserSocialAccount.objects.get(
+            id=account_id,
+            user=request.user,
+            platform__name='instagram'
+        )
+        
+        media = InstagramMedia.objects.get(
+            account=account,
+            media_id=media_id
+        )
+        
+        # Instagram Basic Display API doesn't support deleting posts
+        # This only removes from our local database
+        media.delete()
+        
+        return Response({
+            'message': 'Media removed from database successfully',
+            'note': 'Instagram API does not support deleting published posts. This only removes the record from our database.'
+        })
+        
+    except UserSocialAccount.DoesNotExist:
+        return Response({
+            'error': 'Instagram account not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    except InstagramMedia.DoesNotExist:
+        return Response({
+            'error': 'Media not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        logger.error(f"Error deleting Instagram media: {e}")
+        return Response({
+            'error': 'Failed to delete media'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

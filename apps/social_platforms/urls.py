@@ -22,6 +22,22 @@ urlpatterns = [
     path('analytics/<int:account_id>/detailed/', views.get_detailed_analytics, name='detailed_analytics'),
     path('debug/<int:account_id>/', views.debug_account, name='debug_account'),
     
+    # LinkedIn specific endpoints
+    path('linkedin/<int:account_id>/organizations/', views.get_linkedin_organizations, name='linkedin_organizations'),
+    path('linkedin/<int:account_id>/posts/', views.get_linkedin_posts, name='linkedin_posts'),
+    path('linkedin/<int:account_id>/posts/<str:post_id>/', views.get_linkedin_post_detail, name='linkedin_post_detail'),
+    path('linkedin/<int:account_id>/posts/<str:post_id>/update/', views.update_linkedin_post, name='update_linkedin_post'),
+    path('linkedin/<int:account_id>/posts/<str:post_id>/delete/', views.delete_linkedin_post, name='delete_linkedin_post'),
+    
+    # Instagram specific endpoints
+    path('instagram/<int:account_id>/media/', views.get_instagram_media, name='instagram_media'),
+    path('instagram/<int:account_id>/media/<str:media_id>/', views.get_instagram_media_detail, name='instagram_media_detail'),
+    path('instagram/<int:account_id>/media/<str:media_id>/update/', views.update_instagram_media, name='update_instagram_media'),
+    path('instagram/<int:account_id>/media/<str:media_id>/delete/', views.delete_instagram_media, name='delete_instagram_media'),
+    path('linkedin/<int:account_id>/posts/<str:post_id>/update/', views.update_linkedin_post, name='update_linkedin_post'),
+    path('linkedin/<int:account_id>/posts/<str:post_id>/delete/', views.delete_linkedin_post, name='delete_linkedin_post'),
+    path('linkedin/<int:account_id>/create-post/', views.create_linkedin_post, name='create_linkedin_post'),
+    
     # Video management endpoints
     path('videos/<int:account_id>/', views.get_videos, name='get_videos'),
     path('videos/<int:account_id>/<str:video_id>/', views.get_video_details, name='get_video_details'),
