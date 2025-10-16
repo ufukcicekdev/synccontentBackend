@@ -321,11 +321,16 @@ def get_platform_user_info(platform_name, access_token):
             response.raise_for_status()
             data = response.json()
             
-            # Find Instagram business account from Facebook pages
-            ig_account = None
+            logger.info(f"Instagram OAuth: Found {len(data.get('data', []))} Facebook pages")
+            
+            # Find ALL Instagram business accounts from Facebook pages
+            ig_accounts = []
             for page in data.get('data', []):
+                page_name = page.get('name', 'Unknown')
                 if 'instagram_business_account' in page:
                     ig_account_id = page['instagram_business_account']['id']
+                    logger.info(f"Instagram OAuth: Found IG Business account on page '{page_name}' (Page ID: {page.get('id')})")
+                    
                     # Get detailed Instagram Business Account info
                     ig_response = requests.get(
                         f'https://graph.facebook.com/v18.0/{ig_account_id}',
@@ -336,24 +341,46 @@ def get_platform_user_info(platform_name, access_token):
                     )
                     if ig_response.status_code == 200:
                         ig_data = ig_response.json()
-                        return {
-                            'id': ig_data.get('id'),
-                            'username': ig_data.get('username', ''),
-                            'display_name': ig_data.get('name', ig_data.get('username', '')),
-                            'profile_picture': ig_data.get('profile_picture_url', ''),
-                            'permissions': {
-                                'media_count': ig_data.get('media_count', 0),
-                                'followers_count': ig_data.get('followers_count', 0),
-                                'follows_count': ig_data.get('follows_count', 0),
-                                'website': ig_data.get('website', ''),
-                                'biography': ig_data.get('biography', ''),
-                                'account_type': 'BUSINESS',
-                                'facebook_page_id': page.get('id', ''),
-                                'facebook_page_name': page.get('name', '')
-                            }
-                        }
+                        ig_username = ig_data.get('username', 'unknown')
+                        logger.info(f"Instagram OAuth: Retrieved account @{ig_username} (Followers: {ig_data.get('followers_count', 0)})")
+                        
+                        ig_accounts.append({
+                            'data': ig_data,
+                            'page_id': page.get('id', ''),
+                            'page_name': page_name,
+                            'followers': ig_data.get('followers_count', 0)
+                        })
+                else:
+                    logger.info(f"Instagram OAuth: Page '{page_name}' has no Instagram Business account")
             
-            # If no Instagram business account found, return error info
+            # If we found Instagram Business accounts, use the one with most followers (likely the main one)
+            if ig_accounts:
+                # Sort by follower count (descending) to get the main account
+                ig_accounts.sort(key=lambda x: x['followers'], reverse=True)
+                selected = ig_accounts[0]
+                ig_data = selected['data']
+                
+                logger.info(f"Instagram OAuth: Selected @{ig_data.get('username')} with {selected['followers']} followers from page '{selected['page_name']}'")
+                
+                return {
+                    'id': ig_data.get('id'),
+                    'username': ig_data.get('username', ''),
+                    'display_name': ig_data.get('name', ig_data.get('username', '')),
+                    'profile_picture': ig_data.get('profile_picture_url', ''),
+                    'permissions': {
+                        'media_count': ig_data.get('media_count', 0),
+                        'followers_count': ig_data.get('followers_count', 0),
+                        'follows_count': ig_data.get('follows_count', 0),
+                        'website': ig_data.get('website', ''),
+                        'biography': ig_data.get('biography', ''),
+                        'account_type': 'BUSINESS',
+                        'facebook_page_id': selected['page_id'],
+                        'facebook_page_name': selected['page_name']
+                    }
+                }
+            
+            # If no Instagram business account found, return personal account info
+            logger.warning(f"Instagram OAuth: No Instagram Business accounts found across {len(data.get('data', []))} pages")
             return {
                 'id': 'personal_account',
                 'username': data.get('data', [{}])[0].get('name', 'Personal Account') if data.get('data') else 'Personal Account',
@@ -362,8 +389,8 @@ def get_platform_user_info(platform_name, access_token):
                 'permissions': {
                     'account_type': 'PERSONAL',
                     'pages_found': len(data.get('data', [])),
-                    'message': 'Personal Instagram account connected. Limited features available.',
-                    'help': 'For full analytics, convert to Business/Creator account and connect to a Facebook Page in Instagram Settings.'
+                    'message': 'No Instagram Business account found on your Facebook pages.',
+                    'help': 'Make sure your Instagram Business account (vlog_anilmas) is properly connected to a Facebook Page in Instagram Settings > Account > Linked Accounts.'
                 }
             }
         elif platform_name == 'youtube':
