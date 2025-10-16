@@ -355,14 +355,15 @@ def get_platform_user_info(platform_name, access_token):
             
             # If no Instagram business account found, return error info
             return {
-                'id': 'no_business_account',
-                'username': 'No Business Account',
-                'display_name': 'No Instagram Business Account Found',
+                'id': 'personal_account',
+                'username': data.get('data', [{}])[0].get('name', 'Personal Account') if data.get('data') else 'Personal Account',
+                'display_name': data.get('data', [{}])[0].get('name', 'Instagram Personal Account') if data.get('data') else 'Instagram Personal Account',
                 'profile_picture': '',
                 'permissions': {
-                    'error': 'No Instagram Business Account connected to Facebook pages',
+                    'account_type': 'PERSONAL',
                     'pages_found': len(data.get('data', [])),
-                    'help': 'Please ensure your Instagram account is connected to a Facebook Page and is set to Business or Creator account type'
+                    'message': 'Personal Instagram account connected. Limited features available.',
+                    'help': 'For full analytics, convert to Business/Creator account and connect to a Facebook Page in Instagram Settings.'
                 }
             }
         elif platform_name == 'youtube':

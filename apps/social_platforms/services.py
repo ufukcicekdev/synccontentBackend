@@ -568,21 +568,23 @@ class InstagramBusinessAnalyticsService:
     
     @classmethod
     def fetch_account_analytics(cls, account: UserSocialAccount):
-        """Fetch comprehensive Instagram Business account analytics using Instagram Business API"""
+        """Fetch comprehensive Instagram account analytics (Business API preferred, fallback to basic info)"""
         if account.platform.name != 'instagram':
             return None
         
         try:
             access_token = account.decrypt_token(account.access_token)
             if not access_token:
-                logger.error(f"No access token available for Instagram Business account {account.id}")
+                logger.error(f"No access token available for Instagram account {account.id}")
                 return None
             
-            # Get Instagram Business Account ID and basic info
+            # Try to get Instagram Business Account ID and basic info
             instagram_account_id, basic_info = cls._get_instagram_business_account_id(access_token)
+            
+            # If no Business account found, create limited analytics with helpful message
             if not instagram_account_id:
-                logger.error(f"No Instagram Business Account found for user account {account.id}")
-                return None
+                logger.warning(f"No Instagram Business Account found for user account {account.id}. Creating limited analytics.")
+                return cls._create_limited_analytics(account, access_token)
             
             # Initialize with Business API data
             analytics_data = {
@@ -608,6 +610,43 @@ class InstagramBusinessAnalyticsService:
                     analytics_data.update(insights_data)
             except Exception as e:
                 logger.warning(f"Could not fetch insights: {e}")
+            
+            # Fetch and store media posts (needed for analytics calculation)
+            try:
+                logger.info(f"Fetching Instagram media for account {account.id}")
+                media_result = cls._fetch_user_media(access_token, account)
+                if media_result and media_result.get('media'):
+                    logger.info(f"Successfully fetched {len(media_result['media'])} Instagram media posts")
+                    
+                    # Calculate engagement metrics from media
+                    media_list = media_result['media']
+                    if media_list:
+                        total_likes = sum(m.get('like_count', 0) for m in media_list)
+                        total_comments = sum(m.get('comments_count', 0) for m in media_list)
+                        
+                        analytics_data['total_likes'] = total_likes
+                        analytics_data['total_comments'] = total_comments
+                        analytics_data['recent_posts_count'] = len(media_list)
+                        analytics_data['recent_total_likes'] = total_likes
+                        analytics_data['recent_total_comments'] = total_comments
+                        
+                        # Calculate engagement rate
+                        if analytics_data['follower_count'] > 0 and len(media_list) > 0:
+                            total_engagement = total_likes + total_comments
+                            analytics_data['engagement_rate'] = (
+                                (total_engagement / (analytics_data['follower_count'] * len(media_list))) * 100
+                            )
+                        
+                        # Calculate averages
+                        if len(media_list) > 0:
+                            analytics_data['average_likes_per_post'] = total_likes / len(media_list)
+                            analytics_data['average_comments_per_post'] = total_comments / len(media_list)
+                        
+                        logger.info(f"Calculated engagement metrics: {total_likes} likes, {total_comments} comments")
+                else:
+                    logger.warning(f"No media fetched for Instagram account {account.id}")
+            except Exception as media_error:
+                logger.error(f"Error fetching Instagram media: {media_error}")
             
             # Update analytics record
             analytics, created = InstagramAnalytics.objects.get_or_create(
@@ -692,6 +731,107 @@ class InstagramBusinessAnalyticsService:
         except Exception as e:
             logger.error(f"Error fetching Instagram account insights: {e}")
             return {}
+    
+    @classmethod
+    def _fetch_media_insights(cls, access_token, media_id):
+        """Fetch Instagram Media Insights using Business API"""
+        try:
+            # Available metrics for media insights: engagement, impressions, reach, saved
+            # Note: Some metrics are only available for specific media types and time periods
+            insights_response = requests.get(
+                f'https://graph.facebook.com/v18.0/{media_id}/insights',
+                params={
+                    'access_token': access_token,
+                    'metric': 'engagement,impressions,reach,saved'
+                }
+            )
+            
+            if insights_response.status_code == 200:
+                insights_data = insights_response.json()
+                metrics = {}
+                for insight in insights_data.get('data', []):
+                    metric_name = insight.get('name')
+                    values = insight.get('values', [])
+                    if values and len(values) > 0:
+                        # Get the first value (most recent)
+                        value = values[0].get('value', 0)
+                        metrics[metric_name] = value
+                
+                return metrics
+            return {}
+        except Exception as e:
+            # Media insights might not be available for all posts
+            logger.debug(f"Could not fetch media insights for {media_id}: {e}")
+            return {}
+    
+    @classmethod
+    def _create_limited_analytics(cls, account: UserSocialAccount, access_token: str):
+        """Create limited analytics for personal Instagram accounts (not Business accounts)"""
+        logger.info(f"Creating limited analytics for personal Instagram account {account.id}")
+        
+        # Initialize basic analytics data
+        analytics_data = {
+            'last_updated': timezone.now(),
+            'follower_count': 0,
+            'following_count': 0,
+            'media_count': 0,
+            'account_type': 'PERSONAL',
+            'is_business_account': False,
+            'website': '',
+            'biography': '',
+            'total_likes': 0,
+            'total_comments': 0,
+            'total_reach': 0,
+            'total_impressions': 0,
+            'engagement_rate': 0,
+            'recent_posts_count': 0
+        }
+        
+        # Try to get basic user info from Facebook (even for personal accounts)
+        try:
+            fb_response = requests.get(
+                'https://graph.facebook.com/v18.0/me',
+                params={
+                    'access_token': access_token,
+                    'fields': 'id,name,picture'
+                }
+            )
+            
+            if fb_response.status_code == 200:
+                fb_data = fb_response.json()
+                logger.info(f"Retrieved Facebook user info for personal account: {fb_data.get('name')}")
+                
+                # Update account info
+                if fb_data.get('name'):
+                    account.platform_display_name = fb_data['name']
+                if fb_data.get('picture', {}).get('data', {}).get('url'):
+                    account.profile_picture_url = fb_data['picture']['data']['url']
+                account.save()
+        except Exception as e:
+            logger.warning(f"Could not fetch basic Facebook info: {e}")
+        
+        # Update or create analytics record with limited data
+        analytics, created = InstagramAnalytics.objects.get_or_create(
+            account=account,
+            defaults=analytics_data
+        )
+        
+        if not created:
+            for key, value in analytics_data.items():
+                setattr(analytics, key, value)
+            analytics.save()
+        
+        # Add helpful message to the response
+        analytics_data['message'] = 'Limited analytics: Instagram Business account required for full features'
+        analytics_data['help'] = (
+            'To unlock full analytics (media posts, insights, engagement metrics), '
+            'convert your Instagram account to a Business or Creator account and '
+            'connect it to a Facebook Page. Visit Instagram Settings > Account > Switch to Professional Account.'
+        )
+        analytics_data['requires_business_account'] = True
+        
+        logger.info(f"Created limited analytics for personal Instagram account {account.id}")
+        return analytics_data
     
     @classmethod
     def fetch_recent_media(cls, account, limit=20):
@@ -779,12 +919,12 @@ class InstagramBusinessAnalyticsService:
                 logger.error("No Instagram business account found")
                 return None
             
-            # Get media from Instagram account
+            # Get media from Instagram account with Business API insights
             response = requests.get(
                 f'https://graph.facebook.com/v18.0/{ig_account_id}/media',
                 params={
                     'access_token': access_token,
-                    'fields': 'id,media_type,media_url,permalink,caption,timestamp,like_count,comments_count',
+                    'fields': 'id,media_type,media_url,permalink,caption,timestamp,like_count,comments_count,media_product_type',
                     'limit': 25
                 }
             )
@@ -809,6 +949,17 @@ class InstagramBusinessAnalyticsService:
                         'like_count': media_item.get('like_count', 0),
                         'comments_count': media_item.get('comments_count', 0),
                     }
+                    
+                    # Try to fetch Business API insights for this media
+                    # Only works for posts published within last 24 hours for some metrics
+                    try:
+                        media_insights = cls._fetch_media_insights(access_token, media_item.get('id'))
+                        if media_insights:
+                            media_data.update(media_insights)
+                            logger.debug(f"Fetched insights for media {media_item.get('id')}")
+                    except Exception as insights_error:
+                        # Insights might not be available for all media (e.g., too old, stories)
+                        logger.debug(f"Could not fetch insights for media {media_item.get('id')}: {insights_error}")
                     
                     # Create or update media record in database
                     cls._create_or_update_media(media_data, account)
@@ -866,22 +1017,6 @@ class InstagramBusinessAnalyticsService:
         except Exception as e:
             logger.error(f"Error creating/updating Instagram media: {e}")
             return None
-    
-    @classmethod
-    def fetch_recent_media(cls, account, limit=20):
-        """Fetch recent media posts for an account"""
-        try:
-            media_queryset = InstagramMedia.objects.filter(
-                account=account
-            ).order_by('-timestamp', '-created_at')[:limit]
-            
-            from .serializers import InstagramMediaSerializer
-            serializer = InstagramMediaSerializer(media_queryset, many=True)
-            return serializer.data
-            
-        except Exception as e:
-            logger.error(f"Error fetching recent Instagram media: {e}")
-            return []
     
     @classmethod
     def get_media_details(cls, account, media_id):
